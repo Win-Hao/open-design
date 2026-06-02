@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type WheelEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type WheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 
 import { Icon } from './Icon';
@@ -550,9 +550,11 @@ export function PreviewDrawOverlay({
   // scroll area scrolls away with the content. Portal it to the non-scrolling preview
   // body (.viewer-body) so it stays fully visible and pinned; CSS then docks it in a
   // reserved strip below the device frame. Falls back to inline when there is no
-  // .viewer-body ancestor.
+  // .viewer-body ancestor. Resolve the host in a layout effect (pre-paint) so the very
+  // first `active` paint is already portaled — with a post-paint effect the clipped
+  // inline toolbar would flash for one frame before the host is found.
   const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) {
       setToolbarHost(null);
       return;
