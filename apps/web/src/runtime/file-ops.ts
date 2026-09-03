@@ -439,7 +439,18 @@ function shellWords(command: string): string[] {
     if (char === '#' && current === '') {
       const lineEnd = command.indexOf('\n', i);
       if (lineEnd === -1) break;
-      i = lineEnd;
+      // Stop one short of the newline so the branch below still emits the
+      // command boundary it carries; skipping past it would splice the next
+      // command onto this one's operands.
+      i = lineEnd - 1;
+      continue;
+    }
+    // A newline ends the command, exactly like `;`. Without this the operand
+    // scan runs past it and reads the next command and its arguments as more
+    // operands of this one.
+    if (char === '\n') {
+      flushCurrent();
+      words.push(';');
       continue;
     }
     if (char === '"' || char === "'") {

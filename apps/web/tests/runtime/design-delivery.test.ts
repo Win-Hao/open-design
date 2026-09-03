@@ -713,6 +713,50 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('delivered');
   });
 
+  it('treats a newline as a command boundary', () => {
+    // Eleventh review round. The operand scan ran past a newline, so the next
+    // command and its arguments were read as more operands of the `rm`. This
+    // predates the comment handling: a plain two-line script had the same
+    // defect. An external removal of stale.txt was then credited to the run,
+    // whose own deletion of missing.txt was never confirmed.
+    for (const command of [
+      'rm -f missing.txt # cleanup\nprintf stale.txt',
+      'rm -f missing.txt\nprintf stale.txt',
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Tidied up.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['stale.txt'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).toBe('no_result');
+    }
+    // A second `rm` on its own line is still its own command and still counts.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed both.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm a.txt\nrm stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('delivered');
+  });
+
   it('does not credit a read-only turn for a file that vanished from outside it', () => {
     // Fourth review round. Two project-file listings prove a name disappeared,
     // never who removed it. A user deleting a file in another tab, a second

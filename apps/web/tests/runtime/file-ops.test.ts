@@ -460,6 +460,21 @@ describe('extractSimpleBashDeletes command position (via deriveFileOps)', () => 
     }
   });
 
+  it('ends the operand scan at a newline', () => {
+    expect(
+      deriveFileOps([use('Bash', { command: 'rm -f missing.txt\nprintf stale.txt' }, 't1'), ok('t1')])
+        .map((e) => e.fullPath),
+    ).toEqual(['missing.txt']);
+    expect(
+      deriveFileOps([use('Bash', { command: 'rm -f missing.txt # c\nprintf stale.txt' }, 't1'), ok('t1')])
+        .map((e) => e.fullPath),
+    ).toEqual(['missing.txt']);
+    expect(
+      deriveFileOps([use('Bash', { command: 'rm a.txt\nrm b.txt' }, 't1'), ok('t1')])
+        .map((e) => e.fullPath),
+    ).toEqual(['a.txt', 'b.txt']);
+  });
+
   it('does not treat a redirection target as a command position', () => {
     // `echo > rm stale.txt` writes into a file named `rm`. The `>` belongs to
     // `echo`, so nothing after it starts a new command.
