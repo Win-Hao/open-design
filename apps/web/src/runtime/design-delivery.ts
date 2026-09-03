@@ -135,6 +135,22 @@ export function resolveDesignDeliveryOutcome(
     return 'delivered';
   }
   if (input.persistenceFailed) return 'delivery_failed';
+  // A confirmed deletion that arrived alongside a failed mutation is a
+  // partial failure, and it must reach the user as one. The report-only
+  // fallback below cannot be trusted to do that: it asks whether the turn
+  // *looks* like it tried to mutate, and a shell deletion the parser cannot
+  // read (`find … -delete`) does not, so the turn would settle on
+  // `report_only` — no failure card, no Retry — while the snapshot proves
+  // files went missing and a mutation errored.
+  //
+  // Scoped to turns carrying this module's own confirmed-deletion signal, so
+  // the report-only escape is unchanged for every turn without one.
+  if (
+    (input.confirmedRemovedFileCount ?? 0) > 0 &&
+    hasPossibleFileMutationFailure(input.events)
+  ) {
+    return 'no_result';
+  }
   if (!hasFileMutationToolUse(input.events) && input.content.trim().length > 0) {
     return 'report_only';
   }

@@ -367,20 +367,20 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('no_result');
   });
 
-  it('does not upgrade a turn to delivered when an unrecognised shell deletion errored', () => {
+  it('keeps a confirmed deletion retryable when an unrecognised shell deletion errored', () => {
     // Review finding on the first cut of this change. The delivered branch
     // accepts a removal the event parser cannot attribute, so clearing it with
     // a parser-driven failure check was asymmetric: a `find … -delete` that
     // removes one file and then errors confirmed a removal, showed no
     // recognised mutation, and was reported as delivered.
     //
-    // The turn settles on `report_only`, which is what `upstream/main` already
-    // returns for this input: `hasFileMutationToolUse` cannot read a deletion
-    // out of `find … -delete` either, so the turn was never eligible for
-    // `no_result`. Reaching `no_result` here would mean widening the
-    // report-only escape for every Design turn with a failed shell command,
-    // which is a separate change with its own blast radius. What this PR owes
-    // is that its new branch does not *upgrade* the turn to `delivered`.
+    // Third review round. Blocking the upgrade to `delivered` was not enough:
+    // the turn then fell to `report_only`, which has neither a failure card
+    // nor Retry, so a partial deletion still read as a successful text-only
+    // turn. The confirmed-deletion signal makes the failure knowable — files
+    // provably went missing AND a mutation errored — so the turn must stay
+    // retryable. Scoped to turns carrying that signal; the report-only escape
+    // is untouched for every other turn.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
@@ -399,7 +399,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         traceObjectFileCount: 0,
         confirmedRemovedFileCount: 1,
       }),
-    ).not.toBe('delivered');
+    ).toBe('no_result');
     // Same shape for the other spellings of the shell tool.
     for (const shellTool of ['shell', 'exec', 'terminal']) {
       expect(
@@ -415,7 +415,7 @@ describe('resolveDesignDeliveryOutcome', () => {
           traceObjectFileCount: 0,
           confirmedRemovedFileCount: 1,
         }),
-      ).not.toBe('delivered');
+      ).toBe('no_result');
     }
   });
 
