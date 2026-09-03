@@ -2,7 +2,7 @@ import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
 import {
-  extractDeletionTargetNames,
+  attributeRemovedFiles,
   hasFileMutationToolUse,
   hasPossibleFileMutationFailure,
 } from './file-ops';
@@ -30,6 +30,12 @@ export interface DesignDeliveryInput {
    * does not say who removed it — see `attributedRemovalCount`.
    */
   confirmedRemovedFileNames?: readonly string[];
+  /**
+   * Resolved project directory, used to place an absolute path a tool call
+   * supplied. Without it an absolute deletion target cannot be shown to be
+   * in-project and is ignored.
+   */
+  projectRoot?: string | null;
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
   persistenceSucceeded?: boolean;
@@ -90,9 +96,7 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 function attributedRemovalCount(input: DesignDeliveryInput): number {
   const removed = input.confirmedRemovedFileNames;
   if (!removed || removed.length === 0) return 0;
-  const targets = extractDeletionTargetNames(input.events);
-  if (targets.size === 0) return 0;
-  return new Set(removed.filter((name) => targets.has(name))).size;
+  return attributeRemovedFiles(removed, input.events, input.projectRoot).length;
 }
 
 /**

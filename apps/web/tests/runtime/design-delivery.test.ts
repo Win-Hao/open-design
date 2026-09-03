@@ -303,7 +303,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: deleteOnlyEvents,
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['sketch-i2i.py', 'prompt-fox-refs.txt'],
+        confirmedRemovedFileNames: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
       }),
     ).toBe('delivered');
     // Only the removals this run asked for count. A listing delta that the
@@ -320,7 +320,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['sketch-i2i.py', 'unrelated-user-file.txt'],
+        confirmedRemovedFileNames: ['scripts/sketch-i2i.py', 'unrelated-user-file.txt'],
       }),
     ).toBe('delivered');
     // A delete-named tool attributes through its path argument too.
@@ -335,7 +335,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        confirmedRemovedFileNames: ['assets/stale.txt'],
       }),
     ).toBe('delivered');
   });
@@ -474,6 +474,92 @@ describe('resolveDesignDeliveryOutcome', () => {
     }
   });
 
+  it('intersects nested project-relative paths without collapsing them', () => {
+    // Sixth review round. The daemon listing names a nested file by its
+    // project-relative path (`assets/stale.txt`), so collapsing a deletion
+    // target to its basename made the intersection empty for every nested
+    // file — which is most of them, including the two in the original report.
+    for (const event of [
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm assets/stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm ./assets/stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm /workspace/proj/assets/stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'assets/stale.txt' } },
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Removed the stale asset.',
+          events: [event, { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false }],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['assets/stale.txt'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).toBe('delivered');
+    }
+  });
+
+  it('does not let a same-named file in another directory stand in', () => {
+    // The reason the match is exact rather than by basename: removing
+    // `other/stale.txt` is not evidence that `assets/stale.txt` was this
+    // run's doing. Both turns issued a parseable `rm`, so they are mutation
+    // attempts with nothing attributable to show, and stay retryable — the
+    // same outcome as a deletion aimed outside the project.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the stale asset.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm other/stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['assets/stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('no_result');
+    // An absolute path outside the project root cannot be placed inside it.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the scratch copy.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm /tmp/scratch/assets/stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['assets/stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('no_result');
+  });
+
+  it('credits a bare target run from a subdirectory when it is unambiguous', () => {
+    // `cd assets && rm stale.txt` names no directory. A single nested listing
+    // entry ending in that name is attributable; two are not, and guessing
+    // between them would be the basename collapse again.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed it.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['assets/stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('delivered');
+  });
+
   it('does not credit a read-only turn for a file that vanished from outside it', () => {
     // Fourth review round. Two project-file listings prove a name disappeared,
     // never who removed it. A user deleting a file in another tab, a second
@@ -522,7 +608,7 @@ describe('resolveDesignDeliveryOutcome', () => {
     // delete-named tool's path argument still credits the run.
     for (const event of [
       { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'unlink ./assets/stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'unlink ./stale.txt' } },
       { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'stale.txt' } },
       { kind: 'tool_use' as const, id: 't-1', name: 'rm_file', input: { file_path: '/abs/proj/stale.txt' } },
     ]) {
@@ -535,6 +621,7 @@ describe('resolveDesignDeliveryOutcome', () => {
           producedFileCount: 0,
           traceObjectFileCount: 0,
           confirmedRemovedFileNames: ['stale.txt'],
+          projectRoot: '/abs/proj',
         }),
       ).toBe('delivered');
     }

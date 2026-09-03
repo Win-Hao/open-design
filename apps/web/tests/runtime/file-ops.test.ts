@@ -4,7 +4,8 @@ import {
   countArtifactFileOps,
   countFileOps,
   deriveFileOps,
-  extractDeletionTargetNames,
+  attributeRemovedFiles,
+  extractDeletionTargetPaths,
   hasFileMutationToolUse,
   hasPossibleFileMutationFailure,
 } from '../../src/runtime/file-ops';
@@ -354,33 +355,51 @@ describe('hasPossibleFileMutationFailure', () => {
   });
 });
 
-describe('extractDeletionTargetNames', () => {
-  it('returns the basenames a Bash rm/unlink named', () => {
+describe('extractDeletionTargetPaths', () => {
+  const ROOT = '/workspace/proj';
+
+  it('keeps the project-relative path a Bash rm/unlink named', () => {
     expect([
-      ...extractDeletionTargetNames([
+      ...extractDeletionTargetPaths([
         use('Bash', { command: 'rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt' }, 't1'),
         ok('t1'),
-      ]),
-    ]).toEqual(['sketch-i2i.py', 'prompt-fox-refs.txt']);
-    expect([...extractDeletionTargetNames([use('Bash', { command: 'unlink ./a/b/loose.tmp' }, 't1')])])
-      .toEqual(['loose.tmp']);
+      ], ROOT),
+    ]).toEqual(['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt']);
+    expect([...extractDeletionTargetPaths([use('Bash', { command: 'unlink ./a/b/loose.tmp' }, 't1')], ROOT)])
+      .toEqual(['a/b/loose.tmp']);
   });
 
-  it('returns the path argument of a delete-named tool', () => {
+  it('keeps the path argument of a delete-named tool', () => {
     for (const [name, input] of [
       ['delete_file', { path: 'assets/stale.txt' }],
-      ['rm_file', { file_path: '/abs/proj/stale.txt' }],
-      ['unlink_file', { target_path: 'stale.txt' }],
+      ['rm_file', { file_path: `${ROOT}/assets/stale.txt` }],
+      ['unlink_file', { target_path: './assets/stale.txt' }],
     ] as const) {
-      expect([...extractDeletionTargetNames([use(name, input, 't1'), ok('t1')])]).toEqual(['stale.txt']);
+      expect([...extractDeletionTargetPaths([use(name, input, 't1'), ok('t1')], ROOT)])
+        .toEqual(['assets/stale.txt']);
     }
   });
 
+  it('drops an absolute path that is not under the project root', () => {
+    expect(extractDeletionTargetPaths([use('Bash', { command: 'rm /tmp/scratch/old.html' }, 't1')], ROOT).size)
+      .toBe(0);
+    // A `..` escape resolving outside the root, and a climb above its anchor.
+    expect(extractDeletionTargetPaths([use('Bash', { command: `rm ${ROOT}/../other/x.txt` }, 't1')], ROOT).size)
+      .toBe(0);
+    // No root means an absolute path cannot be placed at all.
+    expect(extractDeletionTargetPaths([use('Bash', { command: 'rm /anywhere/x.txt' }, 't1')], null).size)
+      .toBe(0);
+  });
+
+  it('resolves `..` segments that stay inside the project', () => {
+    expect([...extractDeletionTargetPaths([use('Bash', { command: 'rm assets/../stale.txt' }, 't1')], ROOT)])
+      .toEqual(['stale.txt']);
+  });
+
   it('names nothing for reads, writes, edits, or a shell call with no removal', () => {
-    // Round five: a shell call is judged on what it asked to remove, not on
-    // being a shell call. `ls` attributes nothing.
-    expect(extractDeletionTargetNames(undefined).size).toBe(0);
-    expect(extractDeletionTargetNames([]).size).toBe(0);
+    // A shell call is judged on what it asked to remove, not on being a shell.
+    expect(extractDeletionTargetPaths(undefined, ROOT).size).toBe(0);
+    expect(extractDeletionTargetPaths([], ROOT).size).toBe(0);
     for (const ev of [
       use('Bash', { command: 'ls -la' }, 't1'),
       use('Bash', { command: "find . -name '*.bak' -delete" }, 't1'),
@@ -390,14 +409,46 @@ describe('extractDeletionTargetNames', () => {
       use('Edit', { file_path: 'index.html' }, 't1'),
       use('WebFetch', {}, 't1'),
     ]) {
-      expect(extractDeletionTargetNames([ev, ok('t1')]).size).toBe(0);
+      expect(extractDeletionTargetPaths([ev, ok('t1')], ROOT).size).toBe(0);
     }
   });
 
   it('does not require the call to have succeeded', () => {
     // The listing delta already establishes that something went missing; this
-    // predicate only supplies who asked for it.
-    expect([...extractDeletionTargetNames([use('Bash', { command: 'rm stale.txt' }, 't1'), fail('t1')])])
+    // only supplies who asked for it.
+    expect([...extractDeletionTargetPaths([use('Bash', { command: 'rm stale.txt' }, 't1'), fail('t1')], ROOT)])
       .toEqual(['stale.txt']);
+  });
+});
+
+describe('attributeRemovedFiles', () => {
+  const ROOT = '/workspace/proj';
+  const rm = (command: string) => [use('Bash', { command }, 't1'), ok('t1')];
+
+  it('intersects the listing delta with what the run asked to remove', () => {
+    expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm assets/stale.txt'), ROOT))
+      .toEqual(['assets/stale.txt']);
+    // Only the named one; the other removal is someone else's.
+    expect(
+      attributeRemovedFiles(['assets/stale.txt', 'user-notes.md'], rm('rm assets/stale.txt'), ROOT),
+    ).toEqual(['assets/stale.txt']);
+  });
+
+  it('does not match a same-named file in another directory', () => {
+    expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm other/stale.txt'), ROOT)).toEqual([]);
+  });
+
+  it('matches a bare target against a single nested entry, but not an ambiguous one', () => {
+    expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm stale.txt'), ROOT))
+      .toEqual(['assets/stale.txt']);
+    expect(
+      attributeRemovedFiles(['assets/stale.txt', 'other/stale.txt'], rm('rm stale.txt'), ROOT),
+    ).toEqual([]);
+  });
+
+  it('is empty without removals or without deletion targets', () => {
+    expect(attributeRemovedFiles([], rm('rm stale.txt'), ROOT)).toEqual([]);
+    expect(attributeRemovedFiles(['stale.txt'], rm('ls'), ROOT)).toEqual([]);
+    expect(attributeRemovedFiles(['stale.txt'], undefined, ROOT)).toEqual([]);
   });
 });

@@ -201,9 +201,48 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
  * card this change exists to remove.
  */
 /**
- * Every path this run's tool calls named as a deletion target: the operands of
- * a Bash `rm`/`unlink`, and the path argument of a delete-named tool. Returned
- * as basenames, matching how the project-file API keys its listings.
+ * Lexically resolve a tool-supplied path to a project-relative form, or null
+ * when it provably lies outside the project.
+ *
+ * The daemon's project listing names a nested file by its project-relative
+ * path (`assets/stale.txt`), so an attribution match has to compare at that
+ * granularity. Collapsing to a basename would both lose nested files and let
+ * an unrelated `other/stale.txt` stand in for `assets/stale.txt`.
+ */
+function toProjectRelativePath(raw: string, projectRoot?: string | null): string | null {
+  const slashed = raw.replace(/\\/g, '/');
+  const isAbsolute = slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed);
+  const segments: string[] = [];
+  for (const segment of slashed.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      // A `..` that climbs above its own anchor can never be placed.
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  if (segments.length === 0) return null;
+  if (!isAbsolute) return segments.join('/');
+  const rootSegments = projectRoot
+    ? projectRoot.replace(/\\/g, '/').split('/').filter((s) => s && s !== '.')
+    : null;
+  // Without a root there is nothing to anchor an absolute path against, so it
+  // cannot be attributed; with one, it must provably sit underneath.
+  if (!rootSegments || rootSegments.length === 0) return null;
+  if (segments.length <= rootSegments.length) return null;
+  for (let i = 0; i < rootSegments.length; i += 1) {
+    if (segments[i] !== rootSegments[i]) return null;
+  }
+  return segments.slice(rootSegments.length).join('/');
+}
+
+/**
+ * Every project-relative path this run's tool calls named as a deletion
+ * target: the operands of a Bash `rm`/`unlink`, and the path argument of a
+ * delete-named tool. Absolute paths are resolved against `projectRoot` and
+ * dropped when they fall outside it.
  *
  * This is the attribution evidence for a project-file snapshot delta. Two
  * listings prove that a name disappeared, never who removed it — a user
@@ -219,19 +258,59 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
  * back to the outcome it had before this signal existed; closing that needs a
  * run-scoped deletion record from the daemon.
  */
-export function extractDeletionTargetNames(events: AgentEvent[] | undefined): Set<string> {
-  const names = new Set<string>();
+export function extractDeletionTargetPaths(
+  events: AgentEvent[] | undefined,
+  projectRoot?: string | null,
+): Set<string> {
+  const paths = new Set<string>();
+  const add = (raw: string) => {
+    const relative = toProjectRelativePath(raw, projectRoot);
+    if (relative) paths.add(relative);
+  };
   for (const ev of dedupeToolUsesById(events)) {
     if (ev.kind !== 'tool_use') continue;
     if (ev.name === 'Bash') {
-      for (const path of extractSimpleBashDeletes(ev.input)) names.add(basename(path));
+      for (const target of extractSimpleBashDeletes(ev.input)) add(target);
       continue;
     }
     if (classify(ev.name) !== 'delete') continue;
-    const path = extractPath(ev.input);
-    if (path) names.add(basename(path));
+    const target = extractPath(ev.input);
+    if (target) add(target);
   }
-  return names;
+  return paths;
+}
+
+/**
+ * The removed project files this run can be shown to have deleted: the
+ * listing delta intersected with the paths the run asked to remove.
+ *
+ * Matching is exact on the project-relative path. A target with no directory
+ * also matches a single nested listing entry ending in it, which covers a
+ * command run from a subdirectory (`cd assets && rm stale.txt`); an ambiguous
+ * suffix matches nothing rather than guessing, mirroring how touched-path
+ * attribution resolves elsewhere in the app.
+ */
+export function attributeRemovedFiles(
+  removedNames: readonly string[],
+  events: AgentEvent[] | undefined,
+  projectRoot?: string | null,
+): string[] {
+  if (removedNames.length === 0) return [];
+  const targets = extractDeletionTargetPaths(events, projectRoot);
+  if (targets.size === 0) return [];
+  const attributed = new Set<string>();
+  for (const name of removedNames) {
+    if (targets.has(name)) attributed.add(name);
+  }
+  // A target naming no directory could refer to any nested entry ending in it.
+  // Resolve it only when exactly one removal is a candidate; two candidates is
+  // the basename collapse this matching exists to avoid.
+  for (const target of targets) {
+    if (target.includes('/')) continue;
+    const candidates = removedNames.filter((name) => name.endsWith(`/${target}`));
+    if (candidates.length === 1) attributed.add(candidates[0]!);
+  }
+  return [...attributed];
 }
 
 export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined): boolean {
