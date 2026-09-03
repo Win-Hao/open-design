@@ -432,6 +432,16 @@ function shellWords(command: string): string[] {
       }
       continue;
     }
+    // An unquoted `#` at the start of a word begins a comment that runs to the
+    // end of the line; nothing after it is an operand. A `#` inside a word is
+    // an ordinary filename character (`notes#1.txt`), so only a word-initial
+    // one counts.
+    if (char === '#' && current === '') {
+      const lineEnd = command.indexOf('\n', i);
+      if (lineEnd === -1) break;
+      i = lineEnd;
+      continue;
+    }
     if (char === '"' || char === "'") {
       quote = char;
       continue;

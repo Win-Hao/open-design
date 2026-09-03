@@ -637,6 +637,82 @@ describe('resolveDesignDeliveryOutcome', () => {
     }
   });
 
+  it('does not read a shell comment as a deletion operand', () => {
+    // Tenth review round. `rm -f missing.txt # stale.txt` deletes only
+    // missing.txt; everything after the unquoted `#` is a comment. Scanning it
+    // as an operand let a concurrent external removal of stale.txt be credited
+    // to this run. The run's own deletion was never confirmed, so the turn is
+    // an unconfirmed mutation attempt and stays retryable.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Cleaned up what was left.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm -f missing.txt # stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('no_result');
+    // A comment on its own line does not swallow a later command either.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Cleaned up.',
+        events: [
+          {
+            kind: 'tool_use',
+            id: 't-1',
+            name: 'Bash',
+            input: { command: '# tidy up\nrm stale.txt' },
+          },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('delivered');
+    // A `#` inside a word is an ordinary filename character.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the draft.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm notes#1.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['notes#1.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('delivered');
+    // A quoted `#` keeps its operand.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the draft.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm "#draft.txt"' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['#draft.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('delivered');
+  });
+
   it('does not credit a read-only turn for a file that vanished from outside it', () => {
     // Fourth review round. Two project-file listings prove a name disappeared,
     // never who removed it. A user deleting a file in another tab, a second
