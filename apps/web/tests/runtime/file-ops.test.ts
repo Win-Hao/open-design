@@ -479,3 +479,25 @@ describe('extractSimpleBashDeletes command position (via deriveFileOps)', () => 
     ).toEqual(['a.txt', 'b.tmp']);
   });
 });
+
+describe('shell tool recognition across runtimes', () => {
+  it('reads a deletion from every runtime spelling in deriveFileOps', () => {
+    // OpenCode and the pi RPC runtime forward `part.tool` unchanged, so the
+    // shell arrives as lowercase `bash`; an exact-name check dropped the
+    // files-this-turn delete row for those runtimes.
+    for (const toolName of ['Bash', 'bash', 'BASH', 'shell', 'exec', 'terminal', 'local_shell']) {
+      const ops = deriveFileOps([use(toolName, { command: 'rm stale.txt' }, 't1'), ok('t1')]);
+      expect(ops.map((e) => e.fullPath)).toEqual(['stale.txt']);
+      expect(ops[0]!.ops).toEqual(['delete']);
+      expect(ops[0]!.status).toBe('done');
+    }
+  });
+
+  it('recognises them in the mutation-attempt and attribution predicates too', () => {
+    for (const toolName of ['bash', 'shell', 'terminal']) {
+      const events = [use(toolName, { command: 'rm stale.txt' }, 't1'), ok('t1')];
+      expect(hasFileMutationToolUse(events)).toBe(true);
+      expect([...extractDeletionTargetPaths(events, '/workspace/proj')]).toEqual(['stale.txt']);
+    }
+  });
+});

@@ -113,7 +113,7 @@ export function deriveFileOps(events: AgentEvent[] | undefined): FileOpEntry[] {
     const result = resultByToolId.get(ev.id);
     const status: FileOpStatus =
       result == null ? 'running' : result.isError ? 'error' : 'done';
-    if (ev.name === 'Bash') {
+    if (isCommandCapableToolUse(ev)) {
       for (const fullPath of extractSimpleBashDeletes(ev.input)) {
         add(fullPath, 'delete', status);
       }
@@ -132,10 +132,13 @@ export function deriveFileOps(events: AgentEvent[] | undefined): FileOpEntry[] {
 type ToolUseEvent = Extract<AgentEvent, { kind: 'tool_use' }>;
 
 /**
- * Tools that run an arbitrary shell command, so their effect on the project
- * cannot be read from the event. Matched case-insensitively on the name: the
- * daemon normalises codex `command_execution` to `Bash`, while other runtimes
- * forward their own spelling.
+ * Tools that run an arbitrary shell command. Matched case-insensitively on the
+ * name: the daemon normalises codex `command_execution` to `Bash`, but
+ * OpenCode and the pi RPC runtime forward `part.tool` unchanged, so the same
+ * shell arrives as lowercase `bash`. Every site that reads a shell command —
+ * the files-this-turn summary, the mutation-attempt predicate, the failure
+ * guard, and deletion attribution — recognises tools through this one set, so
+ * a runtime cannot be supported by one and missed by another.
  */
 const SHELL_TOOL_NAMES = new Set([
   'bash',
@@ -166,7 +169,7 @@ function isRecognisedFileMutationTool(name: string): boolean {
  * A write/edit/delete tool call, or a simple Bash rm/unlink.
  */
 function isFileMutationToolUse(ev: ToolUseEvent): boolean {
-  if (ev.name === 'Bash') return extractSimpleBashDeletes(ev.input).length > 0;
+  if (isCommandCapableToolUse(ev)) return extractSimpleBashDeletes(ev.input).length > 0;
   return isRecognisedFileMutationTool(ev.name);
 }
 
@@ -269,7 +272,7 @@ export function extractDeletionTargetPaths(
   };
   for (const ev of dedupeToolUsesById(events)) {
     if (ev.kind !== 'tool_use') continue;
-    if (ev.name === 'Bash') {
+    if (isCommandCapableToolUse(ev)) {
       for (const target of extractSimpleBashDeletes(ev.input)) add(target);
       continue;
     }

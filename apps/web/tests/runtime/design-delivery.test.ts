@@ -612,6 +612,31 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('delivered');
   });
 
+  it('attributes a deletion under every runtime spelling of the shell tool', () => {
+    // Ninth review round. The daemon normalises codex `command_execution` to
+    // `Bash`, but OpenCode and the pi RPC runtime forward `part.tool`
+    // unchanged, so the same shell arrives as lowercase `bash`. An exact-name
+    // check left those runtimes' delete-only turns falling through to
+    // `report_only` — the original bug, still unfixed for them.
+    for (const toolName of ['Bash', 'bash', 'shell', 'exec', 'terminal', 'local_shell']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Removed the stale file.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: toolName, input: { command: 'rm stale.txt' } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['stale.txt'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).toBe('delivered');
+    }
+  });
+
   it('does not credit a read-only turn for a file that vanished from outside it', () => {
     // Fourth review round. Two project-file listings prove a name disappeared,
     // never who removed it. A user deleting a file in another tab, a second
