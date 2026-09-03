@@ -460,6 +460,14 @@ describe('extractSimpleBashDeletes command position (via deriveFileOps)', () => 
     }
   });
 
+  it('does not treat a redirection target as a command position', () => {
+    // `echo > rm stale.txt` writes into a file named `rm`. The `>` belongs to
+    // `echo`, so nothing after it starts a new command.
+    for (const command of ['echo > rm stale.txt', 'cat in.txt > rm stale.txt', 'echo 2> unlink loose.tmp']) {
+      expect(deriveFileOps([use('Bash', { command }, 't1'), ok('t1')])).toEqual([]);
+    }
+  });
+
   it('still reads rm/unlink in command position, including after a separator', () => {
     expect(
       deriveFileOps([use('Bash', { command: 'npm run build && rm stale.txt' }, 't1'), ok('t1')])

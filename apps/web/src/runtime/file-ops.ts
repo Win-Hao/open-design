@@ -360,14 +360,28 @@ export function countArtifactFileOps(entries: FileOpEntry[]): ArtifactFileOpCoun
 
 /**
  * `rm` and `unlink` only delete when they are the command being run. As an
- * argument or printed text — `grep rm stale.txt`, `echo rm stale.txt` — the
- * word deletes nothing, so a token scan would invent a deletion target the
- * command never had. A command position is the start of the command line or
- * the token right after a shell separator.
+ * argument, printed text, or a redirection target — `grep rm stale.txt`,
+ * `echo rm stale.txt`, `echo > rm stale.txt` — the word deletes nothing, so a
+ * token scan would invent a deletion target the command never had.
+ *
+ * A command position is the start of the command line or the token right
+ * after a command-list separator. Redirection operators are deliberately NOT
+ * separators here: `>` starts a redirection target belonging to the command
+ * already running, not a new command.
  */
+function isCommandListSeparator(token: string): boolean {
+  return (
+    token === '&&' || token === '||' || token === ';' || token === '|' || token === '&'
+  );
+}
+
 function isCommandPosition(tokens: string[], index: number): boolean {
   if (index === 0) return true;
-  return isShellSeparator(tokens[index - 1]!);
+  const previous = tokens[index - 1]!;
+  if (isCommandListSeparator(previous)) return true;
+  // `cmd > target rm x` — the token after a redirection operator is that
+  // operator's target, and anything past it still belongs to `cmd`.
+  return false;
 }
 
 function extractSimpleBashDeletes(input: unknown): string[] {

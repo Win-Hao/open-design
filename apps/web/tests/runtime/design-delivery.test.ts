@@ -568,7 +568,15 @@ describe('resolveDesignDeliveryOutcome', () => {
     // `grep rm stale.txt` deletes nothing. Scanning every shell word for the
     // token invented a target the command never had, which an unrelated
     // concurrent removal of that same file would then match.
-    for (const command of ['grep rm stale.txt', 'echo rm stale.txt', 'cat notes-about-rm stale.txt']) {
+    for (const command of [
+      'grep rm stale.txt',
+      'echo rm stale.txt',
+      'cat notes-about-rm stale.txt',
+      // Eighth round: `>` is a redirection belonging to `echo`, not a command
+      // boundary. This writes into a file named `rm`; it removes nothing.
+      'echo > rm stale.txt',
+      'cat input.txt > rm stale.txt',
+    ]) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
