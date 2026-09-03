@@ -539,22 +539,66 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('no_result');
   });
 
-  it('credits a bare target run from a subdirectory when it is unambiguous', () => {
-    // `cd assets && rm stale.txt` names no directory. A single nested listing
-    // entry ending in that name is attributable; two are not, and guessing
-    // between them would be the basename collapse again.
+  it('does not credit an unqualified target for a nested removal', () => {
+    // Seventh review round, and my previous test made the leap it warns
+    // about: it was named for `cd assets && rm stale.txt` but the fixture had
+    // no `cd`. Agent shell commands start at the project root, so a bare
+    // `rm -f stale.txt` names the root-level file; if `assets/stale.txt`
+    // vanished concurrently, crediting the run for it would be inventing a
+    // deletion. Resolving the subdirectory case needs the parser to track the
+    // effective working directory, which it does not.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
-        content: 'Removed it.',
+        content: 'Removed the stale file.',
         events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm stale.txt' } },
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
           { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
         confirmedRemovedFileNames: ['assets/stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('no_result');
+  });
+
+  it('does not treat rm named as an argument or printed text as a deletion', () => {
+    // `grep rm stale.txt` deletes nothing. Scanning every shell word for the
+    // token invented a target the command never had, which an unrelated
+    // concurrent removal of that same file would then match.
+    for (const command of ['grep rm stale.txt', 'echo rm stale.txt', 'cat notes-about-rm stale.txt']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Looked through the project notes.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['stale.txt'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).toBe('report_only');
+    }
+    // Still credited when `rm` really is the command, including after a
+    // shell separator.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Built and cleaned up.',
+        events: [
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'npm run build && rm stale.txt' } },
+          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['stale.txt'],
         projectRoot: '/workspace/proj',
       }),
     ).toBe('delivered');

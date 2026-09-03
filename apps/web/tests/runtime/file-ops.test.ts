@@ -438,17 +438,36 @@ describe('attributeRemovedFiles', () => {
     expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm other/stale.txt'), ROOT)).toEqual([]);
   });
 
-  it('matches a bare target against a single nested entry, but not an ambiguous one', () => {
-    expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm stale.txt'), ROOT))
-      .toEqual(['assets/stale.txt']);
-    expect(
-      attributeRemovedFiles(['assets/stale.txt', 'other/stale.txt'], rm('rm stale.txt'), ROOT),
-    ).toEqual([]);
+  it('does not match an unqualified target against a nested entry', () => {
+    // Agent shell commands start at the project root, so `rm stale.txt` names
+    // the root-level file. Crediting it for a nested removal would need cwd
+    // tracking the parser does not have.
+    expect(attributeRemovedFiles(['assets/stale.txt'], rm('rm stale.txt'), ROOT)).toEqual([]);
+    expect(attributeRemovedFiles(['stale.txt'], rm('rm stale.txt'), ROOT)).toEqual(['stale.txt']);
   });
 
   it('is empty without removals or without deletion targets', () => {
     expect(attributeRemovedFiles([], rm('rm stale.txt'), ROOT)).toEqual([]);
     expect(attributeRemovedFiles(['stale.txt'], rm('ls'), ROOT)).toEqual([]);
     expect(attributeRemovedFiles(['stale.txt'], undefined, ROOT)).toEqual([]);
+  });
+});
+
+describe('extractSimpleBashDeletes command position (via deriveFileOps)', () => {
+  it('ignores rm/unlink used as an argument or printed text', () => {
+    for (const command of ['grep rm stale.txt', 'echo rm stale.txt', 'echo unlink loose.tmp']) {
+      expect(deriveFileOps([use('Bash', { command }, 't1'), ok('t1')])).toEqual([]);
+    }
+  });
+
+  it('still reads rm/unlink in command position, including after a separator', () => {
+    expect(
+      deriveFileOps([use('Bash', { command: 'npm run build && rm stale.txt' }, 't1'), ok('t1')])
+        .map((e) => e.fullPath),
+    ).toEqual(['stale.txt']);
+    expect(
+      deriveFileOps([use('Bash', { command: 'rm a.txt; unlink b.tmp' }, 't1'), ok('t1')])
+        .map((e) => e.fullPath),
+    ).toEqual(['a.txt', 'b.tmp']);
   });
 });

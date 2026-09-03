@@ -284,11 +284,13 @@ export function extractDeletionTargetPaths(
  * The removed project files this run can be shown to have deleted: the
  * listing delta intersected with the paths the run asked to remove.
  *
- * Matching is exact on the project-relative path. A target with no directory
- * also matches a single nested listing entry ending in it, which covers a
- * command run from a subdirectory (`cd assets && rm stale.txt`); an ambiguous
- * suffix matches nothing rather than guessing, mirroring how touched-path
- * attribution resolves elsewhere in the app.
+ * Matching is exact on the project-relative path, with no basename or suffix
+ * fallback. Agent shell commands start at the project root, so a bare
+ * `rm stale.txt` names the root-level file; letting it stand in for a nested
+ * `assets/stale.txt` that vanished would credit the run for a removal it did
+ * not make. Resolving a command run from a subdirectory would need the parser
+ * to track the effective working directory, which it does not, so an
+ * unqualified name stays uncredited.
  */
 export function attributeRemovedFiles(
   removedNames: readonly string[],
@@ -301,14 +303,6 @@ export function attributeRemovedFiles(
   const attributed = new Set<string>();
   for (const name of removedNames) {
     if (targets.has(name)) attributed.add(name);
-  }
-  // A target naming no directory could refer to any nested entry ending in it.
-  // Resolve it only when exactly one removal is a candidate; two candidates is
-  // the basename collapse this matching exists to avoid.
-  for (const target of targets) {
-    if (target.includes('/')) continue;
-    const candidates = removedNames.filter((name) => name.endsWith(`/${target}`));
-    if (candidates.length === 1) attributed.add(candidates[0]!);
   }
   return [...attributed];
 }
@@ -364,6 +358,18 @@ export function countArtifactFileOps(entries: FileOpEntry[]): ArtifactFileOpCoun
   return { write, edit };
 }
 
+/**
+ * `rm` and `unlink` only delete when they are the command being run. As an
+ * argument or printed text — `grep rm stale.txt`, `echo rm stale.txt` — the
+ * word deletes nothing, so a token scan would invent a deletion target the
+ * command never had. A command position is the start of the command line or
+ * the token right after a shell separator.
+ */
+function isCommandPosition(tokens: string[], index: number): boolean {
+  if (index === 0) return true;
+  return isShellSeparator(tokens[index - 1]!);
+}
+
 function extractSimpleBashDeletes(input: unknown): string[] {
   if (!input || typeof input !== 'object') return [];
   const command = (input as { command?: unknown }).command;
@@ -373,6 +379,7 @@ function extractSimpleBashDeletes(input: unknown): string[] {
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (token !== 'rm' && token !== 'unlink') continue;
+    if (!isCommandPosition(tokens, i)) continue;
     const commandPaths: string[] = [];
     for (let j = i + 1; j < tokens.length; j += 1) {
       const next = tokens[j]!;
