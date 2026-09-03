@@ -1,7 +1,7 @@
 import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
-import { hasFileMutationToolUse } from './file-ops';
+import { hasFailedFileMutation, hasFileMutationToolUse } from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
 
 export type DesignDeliveryOutcome =
@@ -19,6 +19,12 @@ export interface DesignDeliveryInput {
   events: AgentEvent[] | undefined;
   producedFileCount: number;
   traceObjectFileCount: number;
+  /**
+   * Project files the turn-start snapshot listed that the post-turn refresh no
+   * longer does. Both listings come from the daemon, so this is a
+   * file-system-confirmed deletion count, never an inference from tool events.
+   */
+  confirmedRemovedFileCount?: number;
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
   persistenceSucceeded?: boolean;
@@ -67,6 +73,16 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 }
 
 /**
+ * A deletion is delivery evidence only once the project listing confirms it
+ * AND no file mutation in the turn errored. A successful cleanup next to a
+ * failed write is still a turn that did not land its work, and must keep the
+ * "attempted but failed -> no_result -> Retry" path.
+ */
+function hasConfirmedDeletionDelivery(input: DesignDeliveryInput): boolean {
+  return (input.confirmedRemovedFileCount ?? 0) > 0 && !hasFailedFileMutation(input.events);
+}
+
+/**
  * A successful agent process is not necessarily a delivered design.
  *
  * Design mode is artifact-first, but clarification and explicitly unfinished
@@ -80,6 +96,13 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
  * be downgraded to ARTIFACT_NOT_FOUND. The known cost: an agent that merely
  * claims completion without ever calling a write tool now passes as text; the
  * text itself makes that visible to the user.
+ *
+ * Deletions are the one mutation that never leaves a produced file behind. A
+ * turn whose only file work was removing project files has no artifact to
+ * count, yet it is not report-only either, because the `rm` was a mutation
+ * attempt. The pre/post project-file snapshots settle it: a file the
+ * turn-start listing had and the post-turn refresh lacks is a confirmed
+ * deletion and, absent any errored mutation, counts as delivery.
  */
 export function resolveDesignDeliveryOutcome(
   input: DesignDeliveryInput,
@@ -95,7 +118,8 @@ export function resolveDesignDeliveryOutcome(
     input.traceObjectFileCount > 0 ||
     (input.artifactCount ?? 0) > 0 ||
     input.persistenceSucceeded ||
-    hasLiveArtifactDelivery(input.events)
+    hasLiveArtifactDelivery(input.events) ||
+    hasConfirmedDeletionDelivery(input)
   ) {
     return 'delivered';
   }

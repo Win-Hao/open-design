@@ -129,23 +129,43 @@ export function deriveFileOps(events: AgentEvent[] | undefined): FileOpEntry[] {
   return Array.from(byPath.values());
 }
 
+type ToolUseEvent = Extract<AgentEvent, { kind: 'tool_use' }>;
+
+/**
+ * A write/edit/delete tool call, or a simple Bash rm/unlink. Tool names must
+ * stay aligned with the daemon's cross-runtime `WRITE_OR_EDIT_TOOL_NAMES` set
+ * in `apps/daemon/src/runtimes/run-artifacts.ts`.
+ */
+function isFileMutationToolUse(ev: ToolUseEvent): boolean {
+  if (ev.name === 'Bash') return extractSimpleBashDeletes(ev.input).length > 0;
+  const kind = classify(ev.name);
+  return kind === 'write' || kind === 'edit' || kind === 'delete';
+}
+
 /**
  * True when the run attempted any file mutation (write/edit/delete tool call,
  * or a simple Bash rm/unlink), regardless of whether the attempt succeeded.
- * Tool names must stay aligned with the daemon's cross-runtime
- * `WRITE_OR_EDIT_TOOL_NAMES` set in `apps/daemon/src/runtimes/run-artifacts.ts`.
  */
 export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolean {
-  for (const ev of events ?? []) {
-    if (ev.kind !== 'tool_use') continue;
-    if (ev.name === 'Bash') {
-      if (extractSimpleBashDeletes(ev.input).length > 0) return true;
-      continue;
-    }
-    const kind = classify(ev.name);
-    if (kind === 'write' || kind === 'edit' || kind === 'delete') return true;
+  return (events ?? []).some((ev) => ev.kind === 'tool_use' && isFileMutationToolUse(ev));
+}
+
+/**
+ * True when any file mutation attempt in the run (the same calls
+ * `hasFileMutationToolUse` counts) came back with an error `tool_result`. A
+ * mutation whose result has not arrived is not failed, and reads or
+ * non-deleting Bash commands never count however they ended.
+ */
+export function hasFailedFileMutation(events: AgentEvent[] | undefined): boolean {
+  if (!events || events.length === 0) return false;
+  const erroredToolUseIds = new Set<string>();
+  for (const ev of events) {
+    if (ev.kind === 'tool_result' && ev.isError) erroredToolUseIds.add(ev.toolUseId);
   }
-  return false;
+  if (erroredToolUseIds.size === 0) return false;
+  return events.some(
+    (ev) => ev.kind === 'tool_use' && erroredToolUseIds.has(ev.id) && isFileMutationToolUse(ev),
+  );
 }
 
 export type FileOpCounts = Record<FileOpKind, number>;

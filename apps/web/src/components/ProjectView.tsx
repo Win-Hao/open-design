@@ -252,7 +252,7 @@ import {
   removeAttachedComment,
 } from '../comments';
 import { historyWithApiAttachmentContext } from '../api-attachment-context';
-import { filterImplicitProducedFiles } from '../produced-files';
+import { computeRemovedFileNames, filterImplicitProducedFiles } from '../produced-files';
 import { AvatarMenu } from './AvatarMenu';
 import { Icon } from './Icon';
 import { useWorkspaceTabsDockRef } from './workspaceTabsDock';
@@ -5653,6 +5653,8 @@ export function ProjectView({
               projectDetail.resolvedDir,
             ) ?? [];
             const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
+            const confirmedRemovedFileCount =
+              computeRemovedFileNames(beforeFileNames, nextFiles)?.length ?? 0;
             const touchedFilePaths = extractTouchedFilePathsFromEvents(message.events);
             const traceObjectFiles = mergeRecoveredTraceObjectFile(
               computeTraceObjectFiles(
@@ -5683,6 +5685,7 @@ export function ProjectView({
               events: message.events,
               producedFileCount: produced.length,
               traceObjectFileCount: traceObjectFiles.length,
+              confirmedRemovedFileCount,
               artifactCount: status.artifactCount,
               persistenceSucceeded: artifactPersistenceSucceeded,
               persistenceFailed: artifactPersistenceError !== undefined,
@@ -6093,6 +6096,8 @@ export function ProjectView({
                   projectDetail.resolvedDir,
                 ) ?? [];
                 const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
+                const confirmedRemovedFileCount =
+                  computeRemovedFileNames(beforeFileNames, nextFiles)?.length ?? 0;
                 const touchedFilePaths = extractTouchedFilePathsFromEvents(
                   needsFullReplay ? replayedEvents : message.events,
                 );
@@ -6133,6 +6138,7 @@ export function ProjectView({
                   events: deliveryEvents,
                   producedFileCount: produced.length,
                   traceObjectFileCount: traceObjectFiles.length,
+                  confirmedRemovedFileCount,
                   artifactCount: daemonArtifactCount,
                   persistenceSucceeded: artifactPersistenceSucceeded,
                   persistenceFailed: artifactPersistenceError !== undefined,
@@ -7861,6 +7867,8 @@ export function ProjectView({
                 project.id,
                 projectDetail.resolvedDir,
               ) ?? [];
+              const confirmedRemovedFileCount =
+                computeRemovedFileNames(beforeFileNames, nextFiles)?.length ?? 0;
               // Completion half of the onboarding funnel: the first generation
               // in a recommendation-started project that actually produced a
               // previewable artifact. Gated on the same artifact-producing
@@ -7938,6 +7946,7 @@ export function ProjectView({
                 events: deliveryCandidate.events,
                 producedFileCount: produced.length,
                 traceObjectFileCount: traceObjectFiles.length,
+                confirmedRemovedFileCount,
                 artifactCount: daemonArtifactCount,
                 persistenceSucceeded: artifactPersistenceSucceeded,
                 persistenceFailed: artifactPersistenceError !== undefined,

@@ -4,6 +4,7 @@ import {
   designDeliveryVerificationPending,
   resolveDesignDeliveryOutcome,
 } from '../../src/runtime/design-delivery';
+import type { AgentEvent } from '../../src/types';
 
 describe('resolveDesignDeliveryOutcome', () => {
   it('treats a text answer without any file-write attempt as a report-only result', () => {
@@ -276,6 +277,130 @@ describe('resolveDesignDeliveryOutcome', () => {
         traceObjectFileCount: 0,
       }),
     ).toBe('not_required');
+  });
+
+  it('accepts a file-system-confirmed in-project deletion as delivery evidence', () => {
+    // A Design turn whose only file mutation is a Bash `rm` of stale project
+    // files, followed by a substantive summary, is a completed turn: the
+    // pre/post project-file snapshots confirm the removal. Deletions never
+    // raise producedFileCount, so without this signal the turn fell through
+    // to ARTIFACT_NOT_FOUND even though the run succeeded and the files were
+    // gone.
+    const deleteOnlyEvents: AgentEvent[] = [
+      {
+        kind: 'tool_use',
+        id: 'bash-1',
+        name: 'Bash',
+        input: { command: 'rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt && ls scripts' },
+      },
+      { kind: 'tool_result', toolUseId: 'bash-1', content: 'gen_sketch.py', isError: false },
+    ];
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the stale sketch script and the unused prompt reference list.',
+        events: deleteOnlyEvents,
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 2,
+      }),
+    ).toBe('delivered');
+    // The confirmation comes from the file listing, not from the tool event:
+    // an agent that removes files through a command the Bash inference does
+    // not recognise still delivered once the listing shows the file gone.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: '',
+        events: [
+          { kind: 'tool_use', id: 'bash-2', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+          { kind: 'tool_result', toolUseId: 'bash-2', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('delivered');
+  });
+
+  it('does not let a confirmed deletion rescue a turn whose file mutation errored', () => {
+    // "Attempted but failed -> no_result -> Retry" must survive: a successful
+    // cleanup next to a failed Edit is still a turn that did not land its work.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Cleaned up and updated the page.',
+        events: [
+          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm stale.html' } },
+          { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+          { kind: 'tool_use', id: 'edit-1', name: 'Edit', input: { file_path: 'index.html' } },
+          { kind: 'tool_result', toolUseId: 'edit-1', content: 'String not found', isError: true },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('no_result');
+    // The errored mutation can be the deletion itself (`rm a b` with `b`
+    // missing removes `a` and still exits non-zero).
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the files.',
+        events: [
+          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm stale.html missing.html' } },
+          {
+            kind: 'tool_result',
+            toolUseId: 'bash-1',
+            content: 'rm: missing.html: No such file or directory',
+            isError: true,
+          },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('no_result');
+  });
+
+  it('keeps an unconfirmed deletion attempt a missing deliverable', () => {
+    // Only the project-file snapshot confirms a deletion. An `rm` whose target
+    // never left the listing (or lived outside the project) is still an
+    // attempted mutation with nothing to show for it.
+    for (const confirmedRemovedFileCount of [0, undefined]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Removed /tmp/scratch/old.html.',
+          events: [
+            { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm /tmp/scratch/old.html' } },
+            { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileCount,
+        }),
+      ).toBe('no_result');
+    }
+  });
+
+  it('does not let a confirmed deletion override a clarification turn', () => {
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: '<question-form id="brief">{"questions":[]}</question-form>',
+        events: [],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('awaiting_input');
   });
 
   it('holds completion feedback until Design-mode file verification settles', () => {
