@@ -200,6 +200,31 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
  * lookup next to a successful `rm` would restore the very ARTIFACT_NOT_FOUND
  * card this change exists to remove.
  */
+/**
+ * True when the run made a call that could have removed a project file: a
+ * shell command, or a tool whose name declares a write, edit, or delete.
+ * Success is not required — this asks only whether the run is a plausible
+ * author of a removal, not whether the removal happened.
+ *
+ * It exists so a snapshot delta can be attributed. Two project-file listings
+ * prove that a name disappeared, never who removed it: a user deleting a file
+ * in another tab, a second agent, or an editor writing to the same directory
+ * all produce the identical delta. A run that only read files is not a
+ * candidate author, and must not inherit someone else's deletion.
+ *
+ * Deliberately coarser than `hasFileMutationToolUse`, which parses a Bash
+ * command for `rm`/`unlink`. A shell can remove a file without naming either
+ * (`find … -delete`), so requiring the parse would drop real deletions; the
+ * price is that any shell call in the turn makes the run a candidate.
+ */
+export function hasFileRemovalCapableToolUse(events: AgentEvent[] | undefined): boolean {
+  return (events ?? []).some(
+    (ev) =>
+      ev.kind === 'tool_use' &&
+      (isCommandCapableToolUse(ev) || isRecognisedFileMutationTool(ev.name)),
+  );
+}
+
 export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined): boolean {
   if (!events || events.length === 0) return false;
   const erroredToolUseIds = new Set<string>();

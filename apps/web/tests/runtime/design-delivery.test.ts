@@ -464,6 +464,73 @@ describe('resolveDesignDeliveryOutcome', () => {
     }
   });
 
+  it('does not credit a read-only turn for a file that vanished from outside it', () => {
+    // Fourth review round. Two project-file listings prove a name disappeared,
+    // never who removed it. A user deleting a file in another tab, a second
+    // agent, or an editor writing to the same directory all produce the same
+    // delta. A turn that only read files is not a candidate author and must
+    // keep its report-only outcome instead of inheriting the deletion.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'The hero image uses low contrast; increase it for readability.',
+        events: [
+          { kind: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'hero.png' } },
+          { kind: 'tool_result', toolUseId: 'read-1', content: 'ok', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('report_only');
+    // Same for a turn with no tool events at all (BYOK), and for the
+    // discovery tools that round three established as non-mutating.
+    for (const events of [
+      [],
+      [
+        { kind: 'tool_use' as const, id: 'w-1', name: 'WebFetch', input: { url: 'https://example.com' } },
+        { kind: 'tool_result' as const, toolUseId: 'w-1', content: 'ok', isError: false },
+      ],
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Here is the audit you asked for.',
+          events,
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileCount: 1,
+        }),
+      ).toBe('report_only');
+    }
+  });
+
+  it('still credits a turn that ran a removal-capable tool', () => {
+    // The attribution gate must not undo the fix: a shell call or a
+    // delete-named tool makes the run a plausible author of the removal,
+    // including the `find … -delete` form the parser cannot read.
+    for (const event of [
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'stale.txt' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'shell', input: { command: 'git clean -fd' } },
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Removed the stale files.',
+          events: [event, { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false }],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileCount: 1,
+        }),
+      ).toBe('delivered');
+    }
+  });
+
   it('keeps an unconfirmed deletion attempt a missing deliverable', () => {
     // Only the project-file snapshot confirms a deletion. An `rm` whose target
     // never left the listing (or lived outside the project) is still an

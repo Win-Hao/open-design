@@ -5,6 +5,7 @@ import {
   countFileOps,
   deriveFileOps,
   hasFileMutationToolUse,
+  hasFileRemovalCapableToolUse,
   hasPossibleFileMutationFailure,
 } from '../../src/runtime/file-ops';
 import type { AgentEvent } from '../../src/types';
@@ -350,5 +351,32 @@ describe('hasPossibleFileMutationFailure', () => {
   it('treats a call without a tool_result as not failed', () => {
     expect(hasPossibleFileMutationFailure([use('Write', { file_path: 'a.html' }, 't1')])).toBe(false);
     expect(hasPossibleFileMutationFailure([use('Bash', { command: 'rm a.txt' }, 't1'), fail('t2')])).toBe(false);
+  });
+});
+
+describe('hasFileRemovalCapableToolUse', () => {
+  it('is true for any shell call or delete/write/edit-named tool, success or not', () => {
+    expect(hasFileRemovalCapableToolUse([use('Bash', { command: 'ls' }, 't1')])).toBe(true);
+    expect(hasFileRemovalCapableToolUse([use('Bash', { command: "find . -delete" }, 't1'), ok('t1')])).toBe(true);
+    expect(hasFileRemovalCapableToolUse([use('shell', { command: 'git clean -fd' }, 't1')])).toBe(true);
+    expect(hasFileRemovalCapableToolUse([use('delete_file', { path: 'a.txt' }, 't1')])).toBe(true);
+    expect(hasFileRemovalCapableToolUse([use('Write', { file_path: 'a.html' }, 't1'), fail('t1')])).toBe(true);
+  });
+
+  it('is false for a turn that only read or reported', () => {
+    expect(hasFileRemovalCapableToolUse(undefined)).toBe(false);
+    expect(hasFileRemovalCapableToolUse([])).toBe(false);
+    for (const toolName of ['Read', 'read_file', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'TodoWrite']) {
+      expect(hasFileRemovalCapableToolUse([use(toolName, {}, 't1'), ok('t1')])).toBe(false);
+    }
+  });
+
+  it('is implied by hasPossibleFileMutationFailure', () => {
+    // The round-three no_result branch relies on this: a possible mutation
+    // failure already means a removal-capable tool ran, so that branch does
+    // not need its own attribution gate.
+    const events = [use('Bash', { command: 'rm a.txt' }, 't1'), fail('t1')];
+    expect(hasPossibleFileMutationFailure(events)).toBe(true);
+    expect(hasFileRemovalCapableToolUse(events)).toBe(true);
   });
 });

@@ -1,7 +1,11 @@
 import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
-import { hasFileMutationToolUse, hasPossibleFileMutationFailure } from './file-ops';
+import {
+  hasFileMutationToolUse,
+  hasFileRemovalCapableToolUse,
+  hasPossibleFileMutationFailure,
+} from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
 
 export type DesignDeliveryOutcome =
@@ -73,11 +77,18 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 }
 
 /**
- * A deletion is delivery evidence only once the project listing confirms it
- * AND nothing in the turn errored in a way that could have left the project
- * half-mutated. A successful cleanup next to a failed write is still a turn
- * that did not land its work, and must keep the "attempted but failed ->
- * no_result -> Retry" path.
+ * A deletion is delivery evidence only when three things hold: the project
+ * listing confirms the file is gone, this run could plausibly be the one that
+ * removed it, and nothing in the turn errored in a way that could have left
+ * the project half-mutated.
+ *
+ * The middle condition is attribution. Two listings prove that a name
+ * disappeared, never who removed it — a user deleting a file in another tab
+ * during a read-only report turn produces the same delta as an agent cleanup.
+ * Crediting the run for that would persist delivery evidence for work it did
+ * not do. A successful cleanup next to a failed write is still a turn that did
+ * not land its work, and must keep the "attempted but failed -> no_result ->
+ * Retry" path.
  *
  * The failure guard has to be as parser-independent as the evidence it
  * guards. This branch admits a deletion performed by a command the event
@@ -89,6 +100,7 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 function hasConfirmedDeletionDelivery(input: DesignDeliveryInput): boolean {
   return (
     (input.confirmedRemovedFileCount ?? 0) > 0 &&
+    hasFileRemovalCapableToolUse(input.events) &&
     !hasPossibleFileMutationFailure(input.events)
   );
 }
