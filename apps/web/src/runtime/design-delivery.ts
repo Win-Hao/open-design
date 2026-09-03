@@ -2,8 +2,8 @@ import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
 import {
+  extractDeletionTargetNames,
   hasFileMutationToolUse,
-  hasFileRemovalCapableToolUse,
   hasPossibleFileMutationFailure,
 } from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
@@ -25,10 +25,11 @@ export interface DesignDeliveryInput {
   traceObjectFileCount: number;
   /**
    * Project files the turn-start snapshot listed that the post-turn refresh no
-   * longer does. Both listings come from the daemon, so this is a
-   * file-system-confirmed deletion count, never an inference from tool events.
+   * longer does. Both listings come from the daemon, so a name here is a
+   * file-system-confirmed removal, never an inference from tool events. It
+   * does not say who removed it — see `attributedRemovalCount`.
    */
-  confirmedRemovedFileCount?: number;
+  confirmedRemovedFileNames?: readonly string[];
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
   persistenceSucceeded?: boolean;
@@ -77,32 +78,31 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 }
 
 /**
- * A deletion is delivery evidence only when three things hold: the project
- * listing confirms the file is gone, this run could plausibly be the one that
- * removed it, and nothing in the turn errored in a way that could have left
- * the project half-mutated.
+ * How many file-system-confirmed removals this run can be shown to have
+ * caused: the names missing from the post-turn listing, intersected with the
+ * paths the run's own tool calls asked to delete.
  *
- * The middle condition is attribution. Two listings prove that a name
- * disappeared, never who removed it — a user deleting a file in another tab
- * during a read-only report turn produces the same delta as an agent cleanup.
- * Crediting the run for that would persist delivery evidence for work it did
- * not do. A successful cleanup next to a failed write is still a turn that did
- * not land its work, and must keep the "attempted but failed -> no_result ->
- * Retry" path.
- *
- * The failure guard has to be as parser-independent as the evidence it
- * guards. This branch admits a deletion performed by a command the event
- * parser cannot read, so clearing it with a parser-driven check would let a
- * partial failure through: a `find … -delete` that removes one file and then
- * errors would confirm a removal, show no recognised mutation, and report a
- * concealed partial failure as delivered.
+ * Neither half is sufficient alone. The listing proves a file is gone but not
+ * who removed it; the tool call proves intent but not that anything happened,
+ * which is the gap that produced the original false ARTIFACT_NOT_FOUND. Only
+ * the intersection is evidence of a delivered deletion.
  */
-function hasConfirmedDeletionDelivery(input: DesignDeliveryInput): boolean {
-  return (
-    (input.confirmedRemovedFileCount ?? 0) > 0 &&
-    hasFileRemovalCapableToolUse(input.events) &&
-    !hasPossibleFileMutationFailure(input.events)
-  );
+function attributedRemovalCount(input: DesignDeliveryInput): number {
+  const removed = input.confirmedRemovedFileNames;
+  if (!removed || removed.length === 0) return 0;
+  const targets = extractDeletionTargetNames(input.events);
+  if (targets.size === 0) return 0;
+  return new Set(removed.filter((name) => targets.has(name))).size;
+}
+
+/**
+ * An attributed deletion is delivery evidence unless something in the turn
+ * errored in a way that could have left the project half-mutated. A successful
+ * cleanup next to a failed write is still a turn that did not land its work,
+ * and must keep the "attempted but failed -> no_result -> Retry" path.
+ */
+function hasAttributedDeletionDelivery(input: DesignDeliveryInput): boolean {
+  return attributedRemovalCount(input) > 0 && !hasPossibleFileMutationFailure(input.events);
 }
 
 /**
@@ -123,9 +123,9 @@ function hasConfirmedDeletionDelivery(input: DesignDeliveryInput): boolean {
  * Deletions are the one mutation that never leaves a produced file behind. A
  * turn whose only file work was removing project files has no artifact to
  * count, yet it is not report-only either, because the `rm` was a mutation
- * attempt. The pre/post project-file snapshots settle it: a file the
- * turn-start listing had and the post-turn refresh lacks is a confirmed
- * deletion and, absent any errored mutation, counts as delivery.
+ * attempt. Two pieces of evidence settle it together: the project-file
+ * listings show the file is gone, and the run's own tool calls asked to
+ * delete that path. Absent any errored mutation, that counts as delivery.
  */
 export function resolveDesignDeliveryOutcome(
   input: DesignDeliveryInput,
@@ -142,25 +142,22 @@ export function resolveDesignDeliveryOutcome(
     (input.artifactCount ?? 0) > 0 ||
     input.persistenceSucceeded ||
     hasLiveArtifactDelivery(input.events) ||
-    hasConfirmedDeletionDelivery(input)
+    hasAttributedDeletionDelivery(input)
   ) {
     return 'delivered';
   }
   if (input.persistenceFailed) return 'delivery_failed';
-  // A confirmed deletion that arrived alongside a failed mutation is a
+  // An attributed deletion that arrived alongside a failed mutation is a
   // partial failure, and it must reach the user as one. The report-only
   // fallback below cannot be trusted to do that: it asks whether the turn
-  // *looks* like it tried to mutate, and a shell deletion the parser cannot
-  // read (`find … -delete`) does not, so the turn would settle on
-  // `report_only` — no failure card, no Retry — while the snapshot proves
-  // files went missing and a mutation errored.
+  // *looks* like it tried to mutate, which a deletion phrased so the parser
+  // cannot read it does not, so the turn would settle on `report_only` — no
+  // failure card, no Retry — while the evidence shows a removal this run
+  // asked for and a mutation that errored.
   //
-  // Scoped to turns carrying this module's own confirmed-deletion signal, so
-  // the report-only escape is unchanged for every turn without one.
-  if (
-    (input.confirmedRemovedFileCount ?? 0) > 0 &&
-    hasPossibleFileMutationFailure(input.events)
-  ) {
+  // Gated on the same attribution as the delivered branch, so an unrelated
+  // failed command cannot raise a failure card over someone else's deletion.
+  if (attributedRemovalCount(input) > 0 && hasPossibleFileMutationFailure(input.events)) {
     return 'no_result';
   }
   if (!hasFileMutationToolUse(input.events) && input.content.trim().length > 0) {

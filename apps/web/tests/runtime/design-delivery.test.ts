@@ -303,24 +303,39 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: deleteOnlyEvents,
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 2,
+        confirmedRemovedFileNames: ['sketch-i2i.py', 'prompt-fox-refs.txt'],
       }),
     ).toBe('delivered');
-    // The confirmation comes from the file listing, not from the tool event:
-    // an agent that removes files through a command the Bash inference does
-    // not recognise still delivered once the listing shows the file gone.
+    // Only the removals this run asked for count. A listing delta that the
+    // run's own tool calls do not name is someone else's deletion as far as
+    // this module can tell, so the extra name is ignored rather than credited.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
-        content: '',
+        content: 'Removed the stale sketch script.',
         events: [
-          { kind: 'tool_use', id: 'bash-2', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+          { kind: 'tool_use', id: 'bash-2', name: 'Bash', input: { command: 'rm -f scripts/sketch-i2i.py' } },
           { kind: 'tool_result', toolUseId: 'bash-2', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['sketch-i2i.py', 'unrelated-user-file.txt'],
+      }),
+    ).toBe('delivered');
+    // A delete-named tool attributes through its path argument too.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed it.',
+        events: [
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'assets/stale.txt' } },
+          { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('delivered');
   });
@@ -341,7 +356,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('no_result');
     // The errored mutation can be the deletion itself (`rm a b` with `b`
@@ -362,46 +377,41 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('no_result');
   });
 
-  it('keeps a confirmed deletion retryable when an unrecognised shell deletion errored', () => {
-    // Review finding on the first cut of this change. The delivered branch
-    // accepts a removal the event parser cannot attribute, so clearing it with
-    // a parser-driven failure check was asymmetric: a `find … -delete` that
-    // removes one file and then errors confirmed a removal, showed no
-    // recognised mutation, and was reported as delivered.
-    //
-    // Third review round. Blocking the upgrade to `delivered` was not enough:
-    // the turn then fell to `report_only`, which has neither a failure card
-    // nor Retry, so a partial deletion still read as a successful text-only
-    // turn. The confirmed-deletion signal makes the failure knowable — files
-    // provably went missing AND a mutation errored — so the turn must stay
-    // retryable. Scoped to turns carrying that signal; the report-only escape
-    // is untouched for every other turn.
+  it('keeps an attributed deletion retryable when a mutation errored', () => {
+    // Round three: blocking the upgrade to `delivered` was not enough. The
+    // turn then fell to `report_only`, which has neither a failure card nor
+    // Retry, so a partial deletion read as a successful text-only turn. When
+    // the run asked to remove a file, the file is gone, AND a mutation
+    // errored, the turn must stay retryable.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
         content: 'Cleaned up the backup files.',
         events: [
-          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt other.bak' } },
           {
             kind: 'tool_result',
             toolUseId: 'bash-1',
-            content: "find: './locked': Permission denied",
+            content: "rm: './other.bak': Permission denied",
             isError: true,
           },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('no_result');
-    // Same shape for the other spellings of the shell tool.
-    for (const shellTool of ['shell', 'exec', 'terminal']) {
+    // Round five gated this branch on the same attribution as the delivered
+    // branch. A failed command that named nothing cannot raise a failure card
+    // over a removal this run may have had nothing to do with; that turn keeps
+    // the outcome it had before this signal existed.
+    for (const shellTool of ['Bash', 'shell', 'exec', 'terminal']) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
@@ -413,9 +423,9 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileCount: 1,
+          confirmedRemovedFileNames: ['stale.txt'],
         }),
-      ).toBe('no_result');
+      ).toBe('report_only');
     }
   });
 
@@ -435,7 +445,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('delivered');
   });
@@ -458,7 +468,7 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileCount: 1,
+          confirmedRemovedFileNames: ['stale.txt'],
         }),
       ).toBe('delivered');
     }
@@ -481,7 +491,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('report_only');
     // Same for a turn with no tool events at all (BYOK), and for the
@@ -501,33 +511,54 @@ describe('resolveDesignDeliveryOutcome', () => {
           events,
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileCount: 1,
+          confirmedRemovedFileNames: ['stale.txt'],
         }),
       ).toBe('report_only');
     }
   });
 
-  it('still credits a turn that ran a removal-capable tool', () => {
-    // The attribution gate must not undo the fix: a shell call or a
-    // delete-named tool makes the run a plausible author of the removal,
-    // including the `find … -delete` form the parser cannot read.
+  it('credits only the deletions the run named', () => {
+    // The attribution gate must not undo the fix: a parsed `rm` operand or a
+    // delete-named tool's path argument still credits the run.
     for (const event of [
       { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'unlink ./assets/stale.txt' } },
       { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'shell', input: { command: 'git clean -fd' } },
+      { kind: 'tool_use' as const, id: 't-1', name: 'rm_file', input: { file_path: '/abs/proj/stale.txt' } },
     ]) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
           runStatus: 'succeeded',
-          content: 'Removed the stale files.',
+          content: 'Removed the stale file.',
           events: [event, { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false }],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileCount: 1,
+          confirmedRemovedFileNames: ['stale.txt'],
         }),
       ).toBe('delivered');
+    }
+    // A shell call that names no removal target attributes nothing, however
+    // capable the shell is. This is the round-five requirement: the command
+    // text is in the event, so `ls` is judged on what it asked to remove.
+    // The documented cost is that a removal phrased so the parser cannot read
+    // it (`find … -delete`, `git clean`) also attributes nothing, and its turn
+    // keeps the outcome it had before this signal existed.
+    for (const command of ['ls', "find . -name '*.bak' -delete", 'git clean -fd']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Had a look around the project.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['stale.txt'],
+        }),
+      ).toBe('report_only');
     }
   });
 
@@ -535,7 +566,7 @@ describe('resolveDesignDeliveryOutcome', () => {
     // Only the project-file snapshot confirms a deletion. An `rm` whose target
     // never left the listing (or lived outside the project) is still an
     // attempted mutation with nothing to show for it.
-    for (const confirmedRemovedFileCount of [0, undefined]) {
+    for (const confirmedRemovedFileNames of [[], undefined]) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
@@ -547,7 +578,7 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileCount,
+          confirmedRemovedFileNames,
         }),
       ).toBe('no_result');
     }
@@ -562,7 +593,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: [],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileCount: 1,
+        confirmedRemovedFileNames: ['stale.txt'],
       }),
     ).toBe('awaiting_input');
   });

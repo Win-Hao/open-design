@@ -201,28 +201,37 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
  * card this change exists to remove.
  */
 /**
- * True when the run made a call that could have removed a project file: a
- * shell command, or a tool whose name declares a write, edit, or delete.
- * Success is not required — this asks only whether the run is a plausible
- * author of a removal, not whether the removal happened.
+ * Every path this run's tool calls named as a deletion target: the operands of
+ * a Bash `rm`/`unlink`, and the path argument of a delete-named tool. Returned
+ * as basenames, matching how the project-file API keys its listings.
  *
- * It exists so a snapshot delta can be attributed. Two project-file listings
- * prove that a name disappeared, never who removed it: a user deleting a file
- * in another tab, a second agent, or an editor writing to the same directory
- * all produce the identical delta. A run that only read files is not a
- * candidate author, and must not inherit someone else's deletion.
+ * This is the attribution evidence for a project-file snapshot delta. Two
+ * listings prove that a name disappeared, never who removed it — a user
+ * deleting a file in another tab, a second agent, or an editor writing to the
+ * same directory all produce the identical delta. Intersecting the delta with
+ * the paths this run actually asked to delete is what ties the removal to the
+ * run.
  *
- * Deliberately coarser than `hasFileMutationToolUse`, which parses a Bash
- * command for `rm`/`unlink`. A shell can remove a file without naming either
- * (`find … -delete`), so requiring the parse would drop real deletions; the
- * price is that any shell call in the turn makes the run a candidate.
+ * The command text is already in the event, so a shell call is judged on what
+ * it asked to remove rather than on being a shell call. `ls` names nothing and
+ * attributes nothing. The cost is that a removal phrased so the parser cannot
+ * read it (`find … -delete`) attributes nothing either, and its turn falls
+ * back to the outcome it had before this signal existed; closing that needs a
+ * run-scoped deletion record from the daemon.
  */
-export function hasFileRemovalCapableToolUse(events: AgentEvent[] | undefined): boolean {
-  return (events ?? []).some(
-    (ev) =>
-      ev.kind === 'tool_use' &&
-      (isCommandCapableToolUse(ev) || isRecognisedFileMutationTool(ev.name)),
-  );
+export function extractDeletionTargetNames(events: AgentEvent[] | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const ev of dedupeToolUsesById(events)) {
+    if (ev.kind !== 'tool_use') continue;
+    if (ev.name === 'Bash') {
+      for (const path of extractSimpleBashDeletes(ev.input)) names.add(basename(path));
+      continue;
+    }
+    if (classify(ev.name) !== 'delete') continue;
+    const path = extractPath(ev.input);
+    if (path) names.add(basename(path));
+  }
+  return names;
 }
 
 export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined): boolean {

@@ -4,8 +4,8 @@ import {
   countArtifactFileOps,
   countFileOps,
   deriveFileOps,
+  extractDeletionTargetNames,
   hasFileMutationToolUse,
-  hasFileRemovalCapableToolUse,
   hasPossibleFileMutationFailure,
 } from '../../src/runtime/file-ops';
 import type { AgentEvent } from '../../src/types';
@@ -354,29 +354,50 @@ describe('hasPossibleFileMutationFailure', () => {
   });
 });
 
-describe('hasFileRemovalCapableToolUse', () => {
-  it('is true for any shell call or delete/write/edit-named tool, success or not', () => {
-    expect(hasFileRemovalCapableToolUse([use('Bash', { command: 'ls' }, 't1')])).toBe(true);
-    expect(hasFileRemovalCapableToolUse([use('Bash', { command: "find . -delete" }, 't1'), ok('t1')])).toBe(true);
-    expect(hasFileRemovalCapableToolUse([use('shell', { command: 'git clean -fd' }, 't1')])).toBe(true);
-    expect(hasFileRemovalCapableToolUse([use('delete_file', { path: 'a.txt' }, 't1')])).toBe(true);
-    expect(hasFileRemovalCapableToolUse([use('Write', { file_path: 'a.html' }, 't1'), fail('t1')])).toBe(true);
+describe('extractDeletionTargetNames', () => {
+  it('returns the basenames a Bash rm/unlink named', () => {
+    expect([
+      ...extractDeletionTargetNames([
+        use('Bash', { command: 'rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt' }, 't1'),
+        ok('t1'),
+      ]),
+    ]).toEqual(['sketch-i2i.py', 'prompt-fox-refs.txt']);
+    expect([...extractDeletionTargetNames([use('Bash', { command: 'unlink ./a/b/loose.tmp' }, 't1')])])
+      .toEqual(['loose.tmp']);
   });
 
-  it('is false for a turn that only read or reported', () => {
-    expect(hasFileRemovalCapableToolUse(undefined)).toBe(false);
-    expect(hasFileRemovalCapableToolUse([])).toBe(false);
-    for (const toolName of ['Read', 'read_file', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'TodoWrite']) {
-      expect(hasFileRemovalCapableToolUse([use(toolName, {}, 't1'), ok('t1')])).toBe(false);
+  it('returns the path argument of a delete-named tool', () => {
+    for (const [name, input] of [
+      ['delete_file', { path: 'assets/stale.txt' }],
+      ['rm_file', { file_path: '/abs/proj/stale.txt' }],
+      ['unlink_file', { target_path: 'stale.txt' }],
+    ] as const) {
+      expect([...extractDeletionTargetNames([use(name, input, 't1'), ok('t1')])]).toEqual(['stale.txt']);
     }
   });
 
-  it('is implied by hasPossibleFileMutationFailure', () => {
-    // The round-three no_result branch relies on this: a possible mutation
-    // failure already means a removal-capable tool ran, so that branch does
-    // not need its own attribution gate.
-    const events = [use('Bash', { command: 'rm a.txt' }, 't1'), fail('t1')];
-    expect(hasPossibleFileMutationFailure(events)).toBe(true);
-    expect(hasFileRemovalCapableToolUse(events)).toBe(true);
+  it('names nothing for reads, writes, edits, or a shell call with no removal', () => {
+    // Round five: a shell call is judged on what it asked to remove, not on
+    // being a shell call. `ls` attributes nothing.
+    expect(extractDeletionTargetNames(undefined).size).toBe(0);
+    expect(extractDeletionTargetNames([]).size).toBe(0);
+    for (const ev of [
+      use('Bash', { command: 'ls -la' }, 't1'),
+      use('Bash', { command: "find . -name '*.bak' -delete" }, 't1'),
+      use('Bash', { command: 'git clean -fd' }, 't1'),
+      use('Read', { file_path: 'hero.png' }, 't1'),
+      use('Write', { file_path: 'index.html' }, 't1'),
+      use('Edit', { file_path: 'index.html' }, 't1'),
+      use('WebFetch', {}, 't1'),
+    ]) {
+      expect(extractDeletionTargetNames([ev, ok('t1')]).size).toBe(0);
+    }
+  });
+
+  it('does not require the call to have succeeded', () => {
+    // The listing delta already establishes that something went missing; this
+    // predicate only supplies who asked for it.
+    expect([...extractDeletionTargetNames([use('Bash', { command: 'rm stale.txt' }, 't1'), fail('t1')])])
+      .toEqual(['stale.txt']);
   });
 });
