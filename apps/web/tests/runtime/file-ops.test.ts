@@ -317,9 +317,34 @@ describe('hasPossibleFileMutationFailure', () => {
     }
   });
 
-  it('does not flag an errored read', () => {
-    expect(hasPossibleFileMutationFailure([use('Read', { file_path: 'missing.txt' }, 't1'), fail('t1')])).toBe(false);
-    expect(hasPossibleFileMutationFailure([use('read_file', { path: 'missing.txt' }, 't1'), fail('t1')])).toBe(false);
+  it('does not flag an errored read-only or reporting tool', () => {
+    // Second review finding. A catch-all on "anything that is not a read"
+    // swept up the discovery tools Design mode actually uses, so a failed
+    // WebFetch next to a successful `rm` restored the ARTIFACT_NOT_FOUND card
+    // this change exists to remove. Only shell calls and tools that name a
+    // write/edit/delete can plausibly have mutated files.
+    for (const toolName of [
+      'Read',
+      'read_file',
+      'Grep',
+      'Glob',
+      'WebFetch',
+      'WebSearch',
+      'TodoWrite',
+      'mcp__notion__search',
+    ]) {
+      expect(hasPossibleFileMutationFailure([use(toolName, {}, 't1'), fail('t1')])).toBe(false);
+    }
+  });
+
+  it('matches shell tool names case-insensitively', () => {
+    // The daemon normalises codex `command_execution` to `Bash`; other
+    // runtimes forward their own spelling.
+    for (const toolName of ['bash', 'BASH', 'Shell', 'SHELL', 'Terminal', 'local_shell']) {
+      expect(
+        hasPossibleFileMutationFailure([use(toolName, { command: 'cleanup' }, 't1'), fail('t1')]),
+      ).toBe(true);
+    }
   });
 
   it('treats a call without a tool_result as not failed', () => {

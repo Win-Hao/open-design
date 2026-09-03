@@ -132,14 +132,42 @@ export function deriveFileOps(events: AgentEvent[] | undefined): FileOpEntry[] {
 type ToolUseEvent = Extract<AgentEvent, { kind: 'tool_use' }>;
 
 /**
- * A write/edit/delete tool call, or a simple Bash rm/unlink. Tool names must
- * stay aligned with the daemon's cross-runtime `WRITE_OR_EDIT_TOOL_NAMES` set
- * in `apps/daemon/src/runtimes/run-artifacts.ts`.
+ * Tools that run an arbitrary shell command, so their effect on the project
+ * cannot be read from the event. Matched case-insensitively on the name: the
+ * daemon normalises codex `command_execution` to `Bash`, while other runtimes
+ * forward their own spelling.
+ */
+const SHELL_TOOL_NAMES = new Set([
+  'bash',
+  'shell',
+  'exec',
+  'terminal',
+  'run_command',
+  'run_terminal_cmd',
+  'execute_command',
+  'local_shell',
+]);
+
+function isCommandCapableToolUse(ev: ToolUseEvent): boolean {
+  return SHELL_TOOL_NAMES.has(ev.name.toLowerCase());
+}
+
+/**
+ * A tool whose name declares that it writes, edits, or deletes a file. Names
+ * must stay aligned with the daemon's cross-runtime `WRITE_OR_EDIT_TOOL_NAMES`
+ * set in `apps/daemon/src/runtimes/run-artifacts.ts`.
+ */
+function isRecognisedFileMutationTool(name: string): boolean {
+  const kind = classify(name);
+  return kind === 'write' || kind === 'edit' || kind === 'delete';
+}
+
+/**
+ * A write/edit/delete tool call, or a simple Bash rm/unlink.
  */
 function isFileMutationToolUse(ev: ToolUseEvent): boolean {
   if (ev.name === 'Bash') return extractSimpleBashDeletes(ev.input).length > 0;
-  const kind = classify(ev.name);
-  return kind === 'write' || kind === 'edit' || kind === 'delete';
+  return isRecognisedFileMutationTool(ev.name);
 }
 
 /**
@@ -164,10 +192,13 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
  * that, so the rule inverts: an errored call blocks unless it is a recognised
  * read.
  *
- * The cost is precision — an errored non-mutating call (a failed fetch, a
- * failed `ls`) also blocks. That only withholds the confirmed-deletion
- * leniency and falls back to the previous outcome, so it can never turn a
- * turn that used to pass into a failure.
+ * The widening stops at tools that could plausibly have done it: a shell call,
+ * or a tool whose name declares a write/edit/delete. A tool that only reads or
+ * reports — `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, `TodoWrite` —
+ * never blocks, because treating every errored call as suspect would undo the
+ * fix this guard protects: Design-mode discovery uses `WebFetch`, and a failed
+ * lookup next to a successful `rm` would restore the very ARTIFACT_NOT_FOUND
+ * card this change exists to remove.
  */
 export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined): boolean {
   if (!events || events.length === 0) return false;
@@ -177,7 +208,10 @@ export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined)
   }
   if (erroredToolUseIds.size === 0) return false;
   return events.some(
-    (ev) => ev.kind === 'tool_use' && erroredToolUseIds.has(ev.id) && classify(ev.name) !== 'read',
+    (ev) =>
+      ev.kind === 'tool_use' &&
+      erroredToolUseIds.has(ev.id) &&
+      (isCommandCapableToolUse(ev) || isRecognisedFileMutationTool(ev.name)),
   );
 }
 

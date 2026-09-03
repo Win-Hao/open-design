@@ -440,6 +440,30 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('delivered');
   });
 
+  it('keeps a confirmed deletion delivered when a read-only tool errored', () => {
+    // Second review finding. Design-mode discovery uses WebFetch; a failed
+    // lookup says nothing about whether the deletion landed, and must not
+    // withdraw the delivery the file listing already confirmed.
+    for (const toolName of ['WebFetch', 'WebSearch', 'Grep', 'Glob', 'TodoWrite', 'Read']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Removed the stale file; the reference lookup failed but was not needed.',
+          events: [
+            { kind: 'tool_use', id: 'ro-1', name: toolName, input: {} },
+            { kind: 'tool_result', toolUseId: 'ro-1', content: 'timeout', isError: true },
+            { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
+            { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileCount: 1,
+        }),
+      ).toBe('delivered');
+    }
+  });
+
   it('keeps an unconfirmed deletion attempt a missing deliverable', () => {
     // Only the project-file snapshot confirms a deletion. An `rm` whose target
     // never left the listing (or lived outside the project) is still an
