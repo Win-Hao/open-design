@@ -4,8 +4,8 @@ import {
   countArtifactFileOps,
   countFileOps,
   deriveFileOps,
-  hasFailedFileMutation,
   hasFileMutationToolUse,
+  hasPossibleFileMutationFailure,
 } from '../../src/runtime/file-ops';
 import type { AgentEvent } from '../../src/types';
 
@@ -268,12 +268,12 @@ describe('hasFileMutationToolUse', () => {
   });
 });
 
-describe('hasFailedFileMutation', () => {
-  it('is false without events or when every mutation succeeded', () => {
-    expect(hasFailedFileMutation(undefined)).toBe(false);
-    expect(hasFailedFileMutation([])).toBe(false);
+describe('hasPossibleFileMutationFailure', () => {
+  it('is false without events or when nothing errored', () => {
+    expect(hasPossibleFileMutationFailure(undefined)).toBe(false);
+    expect(hasPossibleFileMutationFailure([])).toBe(false);
     expect(
-      hasFailedFileMutation([
+      hasPossibleFileMutationFailure([
         use('Write', { file_path: 'index.html' }, 't1'),
         ok('t1'),
         use('Bash', { command: 'rm stale.txt' }, 't2'),
@@ -283,14 +283,13 @@ describe('hasFailedFileMutation', () => {
   });
 
   it('flags an errored write/edit/delete tool call or Bash rm/unlink', () => {
-    expect(hasFailedFileMutation([use('Write', { file_path: 'index.html' }, 't1'), fail('t1')])).toBe(true);
-    expect(hasFailedFileMutation([use('Edit', { file_path: 'index.html' }, 't1'), fail('t1')])).toBe(true);
-    expect(hasFailedFileMutation([use('delete_file', { path: 'old.txt' }, 't1'), fail('t1')])).toBe(true);
-    expect(hasFailedFileMutation([use('Bash', { command: 'rm old.txt' }, 't1'), fail('t1')])).toBe(true);
-    expect(hasFailedFileMutation([use('Bash', { command: 'unlink old.txt' }, 't1'), fail('t1')])).toBe(true);
+    expect(hasPossibleFileMutationFailure([use('Write', { file_path: 'a.html' }, 't1'), fail('t1')])).toBe(true);
+    expect(hasPossibleFileMutationFailure([use('Edit', { file_path: 'a.html' }, 't1'), fail('t1')])).toBe(true);
+    expect(hasPossibleFileMutationFailure([use('delete_file', { path: 'old.txt' }, 't1'), fail('t1')])).toBe(true);
+    expect(hasPossibleFileMutationFailure([use('Bash', { command: 'rm old.txt' }, 't1'), fail('t1')])).toBe(true);
     // One failure among otherwise successful mutations is still a failure.
     expect(
-      hasFailedFileMutation([
+      hasPossibleFileMutationFailure([
         use('Bash', { command: 'rm stale.txt' }, 't1'),
         ok('t1'),
         use('Edit', { file_path: 'index.html' }, 't2'),
@@ -299,13 +298,32 @@ describe('hasFailedFileMutation', () => {
     ).toBe(true);
   });
 
-  it('ignores errored reads and errored non-mutating Bash commands', () => {
-    expect(hasFailedFileMutation([use('Read', { file_path: 'missing.txt' }, 't1'), fail('t1')])).toBe(false);
-    expect(hasFailedFileMutation([use('Bash', { command: 'ls missing-dir' }, 't1'), fail('t1')])).toBe(false);
-    expect(hasFailedFileMutation([use('Bash', { command: 'rm old.txt' }, 't1'), fail('t2')])).toBe(false);
+  it('flags an errored shell command that deletes without naming rm', () => {
+    // The whole point of the wider guard: a shell removes files through forms
+    // `extractSimpleBashDeletes` cannot read, and runtimes spell the shell
+    // tool several ways. An error from any of them may be a partial deletion.
+    for (const command of [
+      "find . -name '*.bak' -delete",
+      'git clean -fd',
+      "find . -name '*.tmp' | xargs rm",
+      './scripts/cleanup.sh',
+    ]) {
+      expect(hasPossibleFileMutationFailure([use('Bash', { command }, 't1'), fail('t1')])).toBe(true);
+    }
+    for (const shellTool of ['shell', 'exec', 'terminal', 'run_command']) {
+      expect(
+        hasPossibleFileMutationFailure([use(shellTool, { command: 'rm -rf build' }, 't1'), fail('t1')]),
+      ).toBe(true);
+    }
   });
 
-  it('treats a mutation without a tool_result as not failed', () => {
-    expect(hasFailedFileMutation([use('Write', { file_path: 'index.html' }, 't1')])).toBe(false);
+  it('does not flag an errored read', () => {
+    expect(hasPossibleFileMutationFailure([use('Read', { file_path: 'missing.txt' }, 't1'), fail('t1')])).toBe(false);
+    expect(hasPossibleFileMutationFailure([use('read_file', { path: 'missing.txt' }, 't1'), fail('t1')])).toBe(false);
+  });
+
+  it('treats a call without a tool_result as not failed', () => {
+    expect(hasPossibleFileMutationFailure([use('Write', { file_path: 'a.html' }, 't1')])).toBe(false);
+    expect(hasPossibleFileMutationFailure([use('Bash', { command: 'rm a.txt' }, 't1'), fail('t2')])).toBe(false);
   });
 });

@@ -151,12 +151,25 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
 }
 
 /**
- * True when any file mutation attempt in the run (the same calls
- * `hasFileMutationToolUse` counts) came back with an error `tool_result`. A
- * mutation whose result has not arrived is not failed, and reads or
- * non-deleting Bash commands never count however they ended.
+ * True when the run contains an errored tool call that could have left the
+ * project half-mutated.
+ *
+ * Deliberately wider than `hasFileMutationToolUse`. That predicate reads intent
+ * out of the event — a Bash `rm`, a `Write` call — which is enough to decide
+ * whether the turn *tried* to write. It is not enough to clear a turn whose
+ * delivery evidence came from the file system rather than from the event,
+ * because a shell deletes files without ever naming `rm`: `find … -delete`,
+ * `xargs rm`, or a cleanup script all qualify, and runtimes spell the shell
+ * tool `Bash`, `shell`, `exec`, or `terminal`. Parsing cannot keep up with
+ * that, so the rule inverts: an errored call blocks unless it is a recognised
+ * read.
+ *
+ * The cost is precision — an errored non-mutating call (a failed fetch, a
+ * failed `ls`) also blocks. That only withholds the confirmed-deletion
+ * leniency and falls back to the previous outcome, so it can never turn a
+ * turn that used to pass into a failure.
  */
-export function hasFailedFileMutation(events: AgentEvent[] | undefined): boolean {
+export function hasPossibleFileMutationFailure(events: AgentEvent[] | undefined): boolean {
   if (!events || events.length === 0) return false;
   const erroredToolUseIds = new Set<string>();
   for (const ev of events) {
@@ -164,7 +177,7 @@ export function hasFailedFileMutation(events: AgentEvent[] | undefined): boolean
   }
   if (erroredToolUseIds.size === 0) return false;
   return events.some(
-    (ev) => ev.kind === 'tool_use' && erroredToolUseIds.has(ev.id) && isFileMutationToolUse(ev),
+    (ev) => ev.kind === 'tool_use' && erroredToolUseIds.has(ev.id) && classify(ev.name) !== 'read',
   );
 }
 

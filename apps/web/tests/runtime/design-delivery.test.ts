@@ -367,6 +367,79 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('no_result');
   });
 
+  it('does not upgrade a turn to delivered when an unrecognised shell deletion errored', () => {
+    // Review finding on the first cut of this change. The delivered branch
+    // accepts a removal the event parser cannot attribute, so clearing it with
+    // a parser-driven failure check was asymmetric: a `find … -delete` that
+    // removes one file and then errors confirmed a removal, showed no
+    // recognised mutation, and was reported as delivered.
+    //
+    // The turn settles on `report_only`, which is what `upstream/main` already
+    // returns for this input: `hasFileMutationToolUse` cannot read a deletion
+    // out of `find … -delete` either, so the turn was never eligible for
+    // `no_result`. Reaching `no_result` here would mean widening the
+    // report-only escape for every Design turn with a failed shell command,
+    // which is a separate change with its own blast radius. What this PR owes
+    // is that its new branch does not *upgrade* the turn to `delivered`.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Cleaned up the backup files.',
+        events: [
+          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: "find . -name '*.bak' -delete" } },
+          {
+            kind: 'tool_result',
+            toolUseId: 'bash-1',
+            content: "find: './locked': Permission denied",
+            isError: true,
+          },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).not.toBe('delivered');
+    // Same shape for the other spellings of the shell tool.
+    for (const shellTool of ['shell', 'exec', 'terminal']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Cleaned up.',
+          events: [
+            { kind: 'tool_use', id: 's-1', name: shellTool, input: { command: 'git clean -fd' } },
+            { kind: 'tool_result', toolUseId: 's-1', content: 'error', isError: true },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileCount: 1,
+        }),
+      ).not.toBe('delivered');
+    }
+  });
+
+  it('still accepts a confirmed deletion when only a read errored', () => {
+    // The wider guard must not swallow the fix itself: a failed Read alongside
+    // a confirmed removal is not a mutation failure.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the stale file; the reference list was already gone.',
+        events: [
+          { kind: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'missing.txt' } },
+          { kind: 'tool_result', toolUseId: 'read-1', content: 'not found', isError: true },
+          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
+          { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        confirmedRemovedFileCount: 1,
+      }),
+    ).toBe('delivered');
+  });
+
   it('keeps an unconfirmed deletion attempt a missing deliverable', () => {
     // Only the project-file snapshot confirms a deletion. An `rm` whose target
     // never left the listing (or lived outside the project) is still an

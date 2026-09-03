@@ -1,7 +1,7 @@
 import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
-import { hasFailedFileMutation, hasFileMutationToolUse } from './file-ops';
+import { hasFileMutationToolUse, hasPossibleFileMutationFailure } from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
 
 export type DesignDeliveryOutcome =
@@ -74,12 +74,23 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 
 /**
  * A deletion is delivery evidence only once the project listing confirms it
- * AND no file mutation in the turn errored. A successful cleanup next to a
- * failed write is still a turn that did not land its work, and must keep the
- * "attempted but failed -> no_result -> Retry" path.
+ * AND nothing in the turn errored in a way that could have left the project
+ * half-mutated. A successful cleanup next to a failed write is still a turn
+ * that did not land its work, and must keep the "attempted but failed ->
+ * no_result -> Retry" path.
+ *
+ * The failure guard has to be as parser-independent as the evidence it
+ * guards. This branch admits a deletion performed by a command the event
+ * parser cannot read, so clearing it with a parser-driven check would let a
+ * partial failure through: a `find … -delete` that removes one file and then
+ * errors would confirm a removal, show no recognised mutation, and report a
+ * concealed partial failure as delivered.
  */
 function hasConfirmedDeletionDelivery(input: DesignDeliveryInput): boolean {
-  return (input.confirmedRemovedFileCount ?? 0) > 0 && !hasFailedFileMutation(input.events);
+  return (
+    (input.confirmedRemovedFileCount ?? 0) > 0 &&
+    !hasPossibleFileMutationFailure(input.events)
+  );
 }
 
 /**
