@@ -6,6 +6,7 @@ import { test } from 'vitest';
 import {
   createRunArtifactBaselines,
   diffRunArtifacts,
+  isCompleteSnapshot,
   primaryArtifactChangeForRun,
   snapshotProjectArtifacts,
   snapshotProjectArtifactsAsync,
@@ -367,4 +368,43 @@ test('an untracked file removal is still reported', () => {
 
   const diff = diffRunArtifacts(before, snapshotProjectArtifacts(root));
   assert.deepEqual(diff.removedPaths, [path.join(root, 'prompt-refs.txt')]);
+});
+
+test('a partial after-snapshot reports no removals', () => {
+  // The walk is best-effort: an unreadable directory is skipped silently. For
+  // "created or modified" an unseen file is simply not counted, but for
+  // removals it is indistinguishable from a deletion, so a partial scan would
+  // report every path it could not reach as removed and upgrade an ordinary
+  // turn to delivered. Removals require a complete pair.
+  const root = tmpProject();
+  fs.mkdirSync(path.join(root, 'locked'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'locked', 'kept.txt'), 'still here');
+  fs.writeFileSync(path.join(root, 'index.html'), '<html>page</html>');
+
+  const before = snapshotProjectArtifacts(root);
+  assert.equal(isCompleteSnapshot(before), true);
+  assert.ok(before.has(path.join(root, 'locked', 'kept.txt')));
+
+  fs.chmodSync(path.join(root, 'locked'), 0o000);
+  try {
+    const after = snapshotProjectArtifacts(root);
+    if (isCompleteSnapshot(after)) return; // running as root; nothing to assert
+    assert.equal(after.has(path.join(root, 'locked', 'kept.txt')), false);
+    const diff = diffRunArtifacts(before, after);
+    assert.deepEqual(diff.removedPaths, []);
+  } finally {
+    fs.chmodSync(path.join(root, 'locked'), 0o755);
+  }
+});
+
+test('a snapshot from an unrelated source never claims coverage', () => {
+  // Absent means incomplete, so a hand-built map cannot be diffed for
+  // removals by accident.
+  const root = tmpProject();
+  fs.writeFileSync(path.join(root, 'index.html'), '<html>page</html>');
+  const real = snapshotProjectArtifacts(root);
+  const handBuilt = new Map(real);
+
+  assert.equal(isCompleteSnapshot(handBuilt), false);
+  assert.deepEqual(diffRunArtifacts(handBuilt, new Map()).removedPaths, []);
 });
