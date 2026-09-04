@@ -822,6 +822,7 @@ describe('ProjectView daemon reattach restore', () => {
       updatedAt: startedAt,
       exitCode: null,
       signal: null,
+      removedPaths: ['stale.txt'],
     });
     listActiveChatRuns.mockResolvedValue([]);
 
@@ -846,7 +847,7 @@ describe('ProjectView daemon reattach restore', () => {
       kind: 'tool_use',
       id: 'bash-1',
       name: 'Bash',
-      input: { command: 'rm -f stale.txt && ls' },
+      input: { command: 'cd sub && rm -f stale.txt && ls' },
     });
     capturedHandlers!.onAgentEvent({
       kind: 'tool_result',

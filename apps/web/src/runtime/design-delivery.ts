@@ -1,11 +1,7 @@
 import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
-import {
-  attributeRemovedFiles,
-  hasFileMutationToolUse,
-  hasPossibleFileMutationFailure,
-} from './file-ops';
+import { hasFileMutationToolUse, hasPossibleFileMutationFailure } from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
 
 export type DesignDeliveryOutcome =
@@ -24,18 +20,17 @@ export interface DesignDeliveryInput {
   producedFileCount: number;
   traceObjectFileCount: number;
   /**
-   * Project files the turn-start snapshot listed that the post-turn refresh no
-   * longer does. Both listings come from the daemon, so a name here is a
-   * file-system-confirmed removal, never an inference from tool events. It
-   * does not say who removed it — see `attributedRemovalCount`.
+   * Project-relative files the daemon observed this run remove, from its own
+   * before/after snapshots of the project tree (`RunStatus.removedPaths`).
+   *
+   * This is the only sound source for the signal. A browser-side listing diff
+   * proves a file is gone but not who removed it, and the run's shell commands
+   * cannot supply the difference: `cd x && rm y`, `find … -delete` and
+   * `xargs rm` are not parseable from the command text, and the text never
+   * says whether the command executed. The daemon watches the tree either side
+   * of the run, so it answers both questions at once.
    */
-  confirmedRemovedFileNames?: readonly string[];
-  /**
-   * Resolved project directory, used to place an absolute path a tool call
-   * supplied. Without it an absolute deletion target cannot be shown to be
-   * in-project and is ignored.
-   */
-  projectRoot?: string | null;
+  removedPaths?: readonly string[];
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
   persistenceSucceeded?: boolean;
@@ -83,24 +78,12 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
   );
 }
 
-/**
- * How many file-system-confirmed removals this run can be shown to have
- * caused: the names missing from the post-turn listing, intersected with the
- * paths the run's own tool calls asked to delete.
- *
- * Neither half is sufficient alone. The listing proves a file is gone but not
- * who removed it; the tool call proves intent but not that anything happened,
- * which is the gap that produced the original false ARTIFACT_NOT_FOUND. Only
- * the intersection is evidence of a delivered deletion.
- */
 function attributedRemovalCount(input: DesignDeliveryInput): number {
-  const removed = input.confirmedRemovedFileNames;
-  if (!removed || removed.length === 0) return 0;
-  return attributeRemovedFiles(removed, input.events, input.projectRoot).length;
+  return input.removedPaths?.length ?? 0;
 }
 
 /**
- * An attributed deletion is delivery evidence unless something in the turn
+ * A daemon-observed deletion is delivery evidence unless something in the turn
  * errored in a way that could have left the project half-mutated. A successful
  * cleanup next to a failed write is still a turn that did not land its work,
  * and must keep the "attempted but failed -> no_result -> Retry" path.
@@ -127,9 +110,9 @@ function hasAttributedDeletionDelivery(input: DesignDeliveryInput): boolean {
  * Deletions are the one mutation that never leaves a produced file behind. A
  * turn whose only file work was removing project files has no artifact to
  * count, yet it is not report-only either, because the `rm` was a mutation
- * attempt. Two pieces of evidence settle it together: the project-file
- * listings show the file is gone, and the run's own tool calls asked to
- * delete that path. Absent any errored mutation, that counts as delivery.
+ * attempt. The daemon settles it: it snapshots the project tree either side of
+ * the run and reports what left. Absent any errored mutation, that counts as
+ * delivery.
  */
 export function resolveDesignDeliveryOutcome(
   input: DesignDeliveryInput,
@@ -151,16 +134,12 @@ export function resolveDesignDeliveryOutcome(
     return 'delivered';
   }
   if (input.persistenceFailed) return 'delivery_failed';
-  // An attributed deletion that arrived alongside a failed mutation is a
-  // partial failure, and it must reach the user as one. The report-only
-  // fallback below cannot be trusted to do that: it asks whether the turn
-  // *looks* like it tried to mutate, which a deletion phrased so the parser
-  // cannot read it does not, so the turn would settle on `report_only` — no
-  // failure card, no Retry — while the evidence shows a removal this run
-  // asked for and a mutation that errored.
-  //
-  // Gated on the same attribution as the delivered branch, so an unrelated
-  // failed command cannot raise a failure card over someone else's deletion.
+  // A removal that arrived alongside a failed mutation is a partial failure,
+  // and it must reach the user as one. The report-only fallback below cannot
+  // be trusted to do that: it asks whether the turn *looks* like it tried to
+  // mutate, which a deletion the command text cannot be parsed for does not,
+  // so the turn would settle on `report_only` — no failure card, no Retry —
+  // while the daemon saw files leave the project and a mutation error.
   if (attributedRemovalCount(input) > 0 && hasPossibleFileMutationFailure(input.events)) {
     return 'no_result';
   }

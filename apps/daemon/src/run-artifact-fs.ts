@@ -299,12 +299,23 @@ export interface RunArtifactDiff {
   // (`run_finished.files_written_count`). Same mtime-inclusive touched
   // semantics as `touched`; deletions are ignored.
   filesWritten: number;
+  // Absolute paths present in the before snapshot and absent from the after
+  // snapshot: files this run removed from the project.
+  //
+  // The counters above deliberately ignore deletions, because removing a file
+  // is not artifact production. Delivery is a different question: a turn whose
+  // only work was deleting stale files produced nothing yet did what was asked
+  // (#7744). This is the only place that can answer it, because it observes
+  // the project tree either side of the run rather than reading intent out of
+  // a shell command — `cd x && rm y`, `find … -delete`, and `xargs rm` are all
+  // equally visible here and none of them is parseable from the command text.
+  removedPaths: string[];
 }
 
 // Classify created vs modified tracked files between two snapshots into the
 // artifact / design-system / preview-module signals the run_finished event
-// needs. Deletions are intentionally ignored: removing a file is not artifact
-// production.
+// needs. Deletions are excluded from every counter here — removing a file is
+// not artifact production — and reported separately as `removedPaths`.
 export function diffRunArtifacts(
   before: ArtifactSnapshot,
   after: ArtifactSnapshot,
@@ -321,6 +332,10 @@ export function diffRunArtifacts(
   let filesWritten = 0;
   const contentTouchedPaths: string[] = [];
   const renderDependencyTouchedPaths: string[] = [];
+  const removedPaths: string[] = [];
+  for (const filePath of before.keys()) {
+    if (!after.has(filePath)) removedPaths.push(filePath);
+  }
   for (const [filePath, fingerprint] of after) {
     const prior = before.get(filePath);
     const isNew = !prior;
@@ -366,6 +381,7 @@ export function diffRunArtifacts(
     designSystemCreated,
     previewModuleCount,
     touchedPaths,
+    removedPaths,
     contentCreated,
     contentModified,
     contentTouched: contentCreated + contentModified,

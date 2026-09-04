@@ -303,7 +303,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: deleteOnlyEvents,
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
+        removedPaths: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
       }),
     ).toBe('delivered');
     // Only the removals this run asked for count. A listing delta that the
@@ -320,7 +320,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['scripts/sketch-i2i.py', 'unrelated-user-file.txt'],
+        removedPaths: ['scripts/sketch-i2i.py'],
       }),
     ).toBe('delivered');
     // A delete-named tool attributes through its path argument too.
@@ -335,7 +335,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['assets/stale.txt'],
+        removedPaths: ['assets/stale.txt'],
       }),
     ).toBe('delivered');
   });
@@ -356,7 +356,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        removedPaths: ['stale.txt'],
       }),
     ).toBe('no_result');
     // The errored mutation can be the deletion itself (`rm a b` with `b`
@@ -377,7 +377,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        removedPaths: ['stale.txt'],
       }),
     ).toBe('no_result');
   });
@@ -404,13 +404,12 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        removedPaths: ['stale.txt'],
       }),
     ).toBe('no_result');
-    // Round five gated this branch on the same attribution as the delivered
-    // branch. A failed command that named nothing cannot raise a failure card
-    // over a removal this run may have had nothing to do with; that turn keeps
-    // the outcome it had before this signal existed.
+    // The shape of the command no longer matters. When the daemon saw files
+    // leave and a mutation errored, the turn is a partial failure whatever
+    // spelling the shell used.
     for (const shellTool of ['Bash', 'shell', 'exec', 'terminal']) {
       expect(
         resolveDesignDeliveryOutcome({
@@ -423,9 +422,9 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
+          removedPaths: ['stale.txt'],
         }),
-      ).toBe('report_only');
+      ).toBe('no_result');
     }
   });
 
@@ -445,7 +444,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        removedPaths: ['stale.txt'],
       }),
     ).toBe('delivered');
   });
@@ -468,165 +467,52 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
+          removedPaths: ['stale.txt'],
         }),
       ).toBe('delivered');
     }
   });
 
-  it('intersects nested project-relative paths without collapsing them', () => {
-    // Sixth review round. The daemon listing names a nested file by its
-    // project-relative path (`assets/stale.txt`), so collapsing a deletion
-    // target to its basename made the intersection empty for every nested
-    // file — which is most of them, including the two in the original report.
-    for (const event of [
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm assets/stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm ./assets/stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm /workspace/proj/assets/stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'assets/stale.txt' } },
-    ]) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Removed the stale asset.',
-          events: [event, { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false }],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['assets/stale.txt'],
-          projectRoot: '/workspace/proj',
-        }),
-      ).toBe('delivered');
-    }
-  });
-
-  it('does not let a same-named file in another directory stand in', () => {
-    // The reason the match is exact rather than by basename: removing
-    // `other/stale.txt` is not evidence that `assets/stale.txt` was this
-    // run's doing. Both turns issued a parseable `rm`, so they are mutation
-    // attempts with nothing attributable to show, and stay retryable — the
-    // same outcome as a deletion aimed outside the project.
+  it('delivers the reported cd-and-rm workflow', () => {
+    // Issue #7744's own command. Its `rm` sits behind `&&` and names paths the
+    // command text cannot be shown to have deleted, which is why every parser
+    // round left this turn failing. The daemon reports what left the project
+    // tree, so the shell's shape stops mattering.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
-        content: 'Removed the stale asset.',
+        content: 'Removed the stale sketch script and the unused prompt reference list.',
         events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm other/stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          {
+            kind: 'tool_use',
+            id: 'bash-1',
+            name: 'Bash',
+            input: {
+              command:
+                'pkill -f "gen_sketch.py" 2>/dev/null; cd "/workspace/proj" && rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt && ls scripts',
+            },
+          },
+          { kind: 'tool_result', toolUseId: 'bash-1', content: 'gen_sketch.py', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['assets/stale.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('no_result');
-    // An absolute path outside the project root cannot be placed inside it.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Removed the scratch copy.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm /tmp/scratch/assets/stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['assets/stale.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('no_result');
-  });
-
-  it('does not credit an unqualified target for a nested removal', () => {
-    // Seventh review round, and my previous test made the leap it warns
-    // about: it was named for `cd assets && rm stale.txt` but the fixture had
-    // no `cd`. Agent shell commands start at the project root, so a bare
-    // `rm -f stale.txt` names the root-level file; if `assets/stale.txt`
-    // vanished concurrently, crediting the run for it would be inventing a
-    // deletion. Resolving the subdirectory case needs the parser to track the
-    // effective working directory, which it does not.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Removed the stale file.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['assets/stale.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('no_result');
-  });
-
-  it('does not treat rm named as an argument or printed text as a deletion', () => {
-    // `grep rm stale.txt` deletes nothing. Scanning every shell word for the
-    // token invented a target the command never had, which an unrelated
-    // concurrent removal of that same file would then match.
-    for (const command of [
-      'grep rm stale.txt',
-      'echo rm stale.txt',
-      'cat notes-about-rm stale.txt',
-      // Eighth round: `>` is a redirection belonging to `echo`, not a command
-      // boundary. This writes into a file named `rm`; it removes nothing.
-      'echo > rm stale.txt',
-      'cat input.txt > rm stale.txt',
-    ]) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Looked through the project notes.',
-          events: [
-            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
-            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-          ],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-          projectRoot: '/workspace/proj',
-        }),
-      ).toBe('report_only');
-    }
-    // Still credited when `rm` really is the command, after an unconditional
-    // separator.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Built and cleaned up.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'npm run build; rm stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
-        projectRoot: '/workspace/proj',
+        removedPaths: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
       }),
     ).toBe('delivered');
   });
 
-  it('does not attribute a deletion in a conditional branch', () => {
-    // Twelfth review round. `&&` and `||` make execution depend on an exit
-    // status the command text does not carry: `true || rm stale.txt` succeeds
-    // without deleting anything, so a concurrent external removal would be
-    // credited to this run.
-    //
-    // The cost is the reported bug itself. Issue #7744's command was
-    // `cd "<project>" && rm -f scripts/… && ls scripts`, whose `rm` sits in a
-    // conditional branch, so it is no longer attributable and that turn keeps
-    // the failure card this PR set out to remove. Establishing that the branch
-    // ran needs the daemon's view of the run, not the command string.
+  it('delivers a removal whatever shell form produced it', () => {
+    // The forms that defeated the parser one round at a time — a conditional
+    // branch, a `find … -delete`, a piped `xargs rm` — are indistinguishable
+    // here, because the evidence is the daemon's view of the tree rather than
+    // the command string.
     for (const command of [
-      'true || rm stale.txt',
       'cd sub && rm stale.txt',
-      'cd "/workspace/proj" && rm -f stale.txt && ls',
+      "find . -name '*.bak' -delete",
+      "find . -name '*.tmp' | xargs rm",
+      'git clean -fd',
+      './scripts/cleanup.sh',
     ]) {
       expect(
         resolveDesignDeliveryOutcome({
@@ -639,182 +525,56 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-          projectRoot: '/workspace/proj',
-        }),
-      ).not.toBe('delivered');
-    }
-  });
-
-  it('attributes a deletion under every runtime spelling of the shell tool', () => {
-    // Ninth review round. The daemon normalises codex `command_execution` to
-    // `Bash`, but OpenCode and the pi RPC runtime forward `part.tool`
-    // unchanged, so the same shell arrives as lowercase `bash`. An exact-name
-    // check left those runtimes' delete-only turns falling through to
-    // `report_only` — the original bug, still unfixed for them.
-    for (const toolName of ['Bash', 'bash', 'shell', 'exec', 'terminal', 'local_shell']) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Removed the stale file.',
-          events: [
-            { kind: 'tool_use', id: 't-1', name: toolName, input: { command: 'rm stale.txt' } },
-            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-          ],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-          projectRoot: '/workspace/proj',
+          removedPaths: ['stale.txt'],
         }),
       ).toBe('delivered');
     }
   });
 
-  it('does not read a shell comment as a deletion operand', () => {
-    // Tenth review round. `rm -f missing.txt # stale.txt` deletes only
-    // missing.txt; everything after the unquoted `#` is a comment. Scanning it
-    // as an operand let a concurrent external removal of stale.txt be credited
-    // to this run. The run's own deletion was never confirmed, so the turn is
-    // an unconfirmed mutation attempt and stays retryable.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Cleaned up what was left.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm -f missing.txt # stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('no_result');
-    // A comment on its own line does not swallow a later command either.
+  it('does not deliver when the daemon saw nothing leave the project', () => {
+    // `true || rm stale.txt` never runs the rm, so the daemon reports no
+    // removal and there is nothing to credit.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
         content: 'Cleaned up.',
         events: [
-          {
-            kind: 'tool_use',
-            id: 't-1',
-            name: 'Bash',
-            input: { command: '# tidy up\nrm stale.txt' },
-          },
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'true || rm stale.txt' } },
           { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
-        projectRoot: '/workspace/proj',
+        removedPaths: [],
       }),
-    ).toBe('delivered');
-    // A `#` inside a word is an ordinary filename character.
+    ).not.toBe('delivered');
+    // An attempted deletion the daemon did not observe stays retryable.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
-        content: 'Removed the draft.',
+        content: 'Tried to clean up.',
         events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm notes#1.txt' } },
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm stale.txt' } },
           { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['notes#1.txt'],
-        projectRoot: '/workspace/proj',
+        removedPaths: [],
       }),
-    ).toBe('delivered');
-    // A quoted `#` keeps its operand.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Removed the draft.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm "#draft.txt"' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['#draft.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('delivered');
+    ).toBe('no_result');
   });
 
-  it('treats a newline as a command boundary', () => {
-    // Eleventh review round. The operand scan ran past a newline, so the next
-    // command and its arguments were read as more operands of the `rm`. This
-    // predates the comment handling: a plain two-line script had the same
-    // defect. An external removal of stale.txt was then credited to the run,
-    // whose own deletion of missing.txt was never confirmed.
-    for (const command of [
-      'rm -f missing.txt # cleanup\nprintf stale.txt',
-      'rm -f missing.txt\nprintf stale.txt',
-    ]) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Tidied up.',
-          events: [
-            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
-            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-          ],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-          projectRoot: '/workspace/proj',
-        }),
-      ).toBe('no_result');
-    }
-    // A second `rm` on its own line is still its own command and still counts.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Removed both.',
-        events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'rm a.txt\nrm stale.txt' } },
-          { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
-        projectRoot: '/workspace/proj',
-      }),
-    ).toBe('delivered');
-  });
-
-  it('does not credit a read-only turn for a file that vanished from outside it', () => {
-    // Fourth review round. Two project-file listings prove a name disappeared,
-    // never who removed it. A user deleting a file in another tab, a second
-    // agent, or an editor writing to the same directory all produce the same
-    // delta. A turn that only read files is not a candidate author and must
-    // keep its report-only outcome instead of inheriting the deletion.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'The hero image uses low contrast; increase it for readability.',
-        events: [
-          { kind: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'hero.png' } },
-          { kind: 'tool_result', toolUseId: 'read-1', content: 'ok', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
-      }),
-    ).toBe('report_only');
-    // Same for a turn with no tool events at all (BYOK), and for the
-    // discovery tools that round three established as non-mutating.
+  it('leaves a read-only turn report-only', () => {
+    // A turn that only read files removes nothing, so the daemon's own
+    // before/after diff for that run reports no removals and the turn keeps
+    // its report-only outcome.
     for (const events of [
       [],
+      [
+        { kind: 'tool_use' as const, id: 'r-1', name: 'Read', input: { file_path: 'hero.png' } },
+        { kind: 'tool_result' as const, toolUseId: 'r-1', content: 'ok', isError: false },
+      ],
       [
         { kind: 'tool_use' as const, id: 'w-1', name: 'WebFetch', input: { url: 'https://example.com' } },
         { kind: 'tool_result' as const, toolUseId: 'w-1', content: 'ok', isError: false },
@@ -824,57 +584,11 @@ describe('resolveDesignDeliveryOutcome', () => {
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
           runStatus: 'succeeded',
-          content: 'Here is the audit you asked for.',
+          content: 'The hero image uses low contrast; increase it for readability.',
           events,
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-        }),
-      ).toBe('report_only');
-    }
-  });
-
-  it('credits only the deletions the run named', () => {
-    // The attribution gate must not undo the fix: a parsed `rm` operand or a
-    // delete-named tool's path argument still credits the run.
-    for (const event of [
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'Bash', input: { command: 'unlink ./stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'delete_file', input: { path: 'stale.txt' } },
-      { kind: 'tool_use' as const, id: 't-1', name: 'rm_file', input: { file_path: '/abs/proj/stale.txt' } },
-    ]) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Removed the stale file.',
-          events: [event, { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false }],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
-          projectRoot: '/abs/proj',
-        }),
-      ).toBe('delivered');
-    }
-    // A shell call that names no removal target attributes nothing, however
-    // capable the shell is. This is the round-five requirement: the command
-    // text is in the event, so `ls` is judged on what it asked to remove.
-    // The documented cost is that a removal phrased so the parser cannot read
-    // it (`find … -delete`, `git clean`) also attributes nothing, and its turn
-    // keeps the outcome it had before this signal existed.
-    for (const command of ['ls', "find . -name '*.bak' -delete", 'git clean -fd']) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Had a look around the project.',
-          events: [
-            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
-            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-          ],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          confirmedRemovedFileNames: ['stale.txt'],
+          removedPaths: [],
         }),
       ).toBe('report_only');
     }
@@ -884,7 +598,7 @@ describe('resolveDesignDeliveryOutcome', () => {
     // Only the project-file snapshot confirms a deletion. An `rm` whose target
     // never left the listing (or lived outside the project) is still an
     // attempted mutation with nothing to show for it.
-    for (const confirmedRemovedFileNames of [[], undefined]) {
+    for (const removedPaths of [[], undefined]) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
@@ -896,7 +610,7 @@ describe('resolveDesignDeliveryOutcome', () => {
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
-          confirmedRemovedFileNames,
+          removedPaths,
         }),
       ).toBe('no_result');
     }
@@ -911,7 +625,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: [],
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        confirmedRemovedFileNames: ['stale.txt'],
+        removedPaths: ['stale.txt'],
       }),
     ).toBe('awaiting_input');
   });

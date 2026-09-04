@@ -51,6 +51,7 @@ test('a second-round edit of an existing artifact counts as touched, not zero', 
     designSystemCreated: false,
     previewModuleCount: 0,
     touchedPaths: [page],
+    removedPaths: [],
     contentCreated: 0,
     contentModified: 1,
     contentTouched: 1,
@@ -78,6 +79,7 @@ test('created vs modified are reported separately and sum into touched', () => {
     designSystemCreated: false,
     previewModuleCount: 0,
     touchedPaths: [path.join(root, 'a.html'), path.join(root, 'b.png')],
+    removedPaths: [],
     contentCreated: 1,
     contentModified: 1,
     contentTouched: 2,
@@ -102,6 +104,7 @@ test('a touched DESIGN.md sets designSystemCreated but not artifact_count', () =
     designSystemCreated: true,
     previewModuleCount: 0,
     touchedPaths: [],
+    removedPaths: [],
     contentCreated: 0,
     contentModified: 0,
     contentTouched: 0,
@@ -150,6 +153,7 @@ test('non-artifact files and ignored dirs do not count as artifacts', () => {
     designSystemCreated: false,
     previewModuleCount: 0,
     touchedPaths: [],
+    removedPaths: [],
     contentCreated: 0,
     contentModified: 0,
     contentTouched: 0,
@@ -307,6 +311,7 @@ test('a no-op turn (no file writes) reports zero', () => {
     designSystemCreated: false,
     previewModuleCount: 0,
     touchedPaths: [],
+    removedPaths: [],
     contentCreated: 0,
     contentModified: 0,
     contentTouched: 0,
@@ -316,4 +321,50 @@ test('a no-op turn (no file writes) reports zero', () => {
     supportingMediaTouched: 0,
     filesWritten: 0,
   });
+});
+
+test('removals are reported separately and never counted as production', () => {
+  // A delete-only run produces nothing, so every counter here stays zero; the
+  // removal is the delivery evidence and it has nowhere else to come from
+  // (#7744). Attribution cannot be read out of the agent's shell command —
+  // `cd x && rm y` and `find … -delete` are equally unparseable — so this
+  // before/after diff of the project tree is the only observation of it.
+  const root = tmpProject();
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'index.html'), '<html>page</html>');
+  fs.writeFileSync(path.join(root, 'scripts', 'sketch.py'), 'print(1)');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'keep me');
+  const before = snapshotProjectArtifacts(root);
+
+  fs.rmSync(path.join(root, 'scripts', 'sketch.py'));
+  const diff = diffRunArtifacts(before, snapshotProjectArtifacts(root));
+
+  assert.deepEqual(diff.removedPaths, [path.join(root, 'scripts', 'sketch.py')]);
+  assert.equal(diff.created, 0);
+  assert.equal(diff.modified, 0);
+  assert.equal(diff.touched, 0);
+  assert.equal(diff.filesWritten, 0);
+});
+
+test('a run that removed nothing reports no removals', () => {
+  const root = tmpProject();
+  fs.writeFileSync(path.join(root, 'index.html'), '<html>page</html>');
+  const before = snapshotProjectArtifacts(root);
+  fs.writeFileSync(path.join(root, 'about.html'), '<html>about</html>');
+
+  const diff = diffRunArtifacts(before, snapshotProjectArtifacts(root));
+  assert.deepEqual(diff.removedPaths, []);
+  assert.equal(diff.created, 1);
+});
+
+test('an untracked file removal is still reported', () => {
+  // The snapshot fingerprints tracked files by content and everything else by
+  // stat, but both are in the map, so a deleted `.py` or `.txt` is visible.
+  const root = tmpProject();
+  fs.writeFileSync(path.join(root, 'prompt-refs.txt'), 'a\nb\n');
+  const before = snapshotProjectArtifacts(root);
+  fs.rmSync(path.join(root, 'prompt-refs.txt'));
+
+  const diff = diffRunArtifacts(before, snapshotProjectArtifacts(root));
+  assert.deepEqual(diff.removedPaths, [path.join(root, 'prompt-refs.txt')]);
 });
