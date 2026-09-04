@@ -1,7 +1,11 @@
 import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
-import { hasFileMutationToolUse, hasPossibleFileMutationFailure } from './file-ops';
+import {
+  hasFileMutationToolUse,
+  hasFileRemovalCapableToolUse,
+  hasPossibleFileMutationFailure,
+} from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
 
 export type DesignDeliveryOutcome =
@@ -78,8 +82,23 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
   );
 }
 
+/**
+ * Removals this run can be held responsible for: files the daemon saw leave
+ * the project during the run, when the run also made a call capable of
+ * removing one.
+ *
+ * The daemon's record is a before/after diff of the project tree across the
+ * run's window. It proves a file left; it does not prove this run removed it,
+ * because a user or another process can delete something while the turn is in
+ * flight. Pairing it with capability excludes the turn that only read or
+ * reported, which is the case that would otherwise inherit someone else's
+ * deletion. Neither half is checked against the other's paths — that is the
+ * command parsing this design replaced.
+ */
 function attributedRemovalCount(input: DesignDeliveryInput): number {
-  return input.removedPaths?.length ?? 0;
+  const removed = input.removedPaths?.length ?? 0;
+  if (removed === 0) return 0;
+  return hasFileRemovalCapableToolUse(input.events) ? removed : 0;
 }
 
 /**

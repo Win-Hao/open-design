@@ -946,6 +946,7 @@ export function createChatRunService({
       endedWithUnfinishedWork: false,
       artifactCount: undefined as number | undefined,
       artifactPaths: undefined as string[] | undefined,
+      removedPaths: undefined as string[] | undefined,
       artifactOutcome: undefined,
       eventsLogPath: runsLogDir ? path.join(runsLogDir, id, 'events.jsonl') : null,
       statePath: runsLogDir ? path.join(runsLogDir, id, 'state.json') : null,
@@ -1138,6 +1139,7 @@ export function createChatRunService({
     run.retryOriginErrorCode = null;
     run.artifactCount = undefined;
     run.artifactPaths = undefined;
+    run.removedPaths = undefined;
     run.artifactOutcome = undefined;
     run.deliverableValid = undefined;
     run.deliverableValidation = undefined;

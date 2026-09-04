@@ -182,6 +182,35 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
 }
 
 /**
+ * True when the run made a call that could remove a project file: a shell
+ * command, or a tool whose name declares a write, edit, or delete. Success is
+ * not required, and no path is read out of the command.
+ *
+ * It pairs with the daemon's removal record rather than replacing it. That
+ * record is a before/after diff of the project tree across the run's window,
+ * which proves a file left but not that this run removed it: a user, a sync
+ * client, or another process can delete something while a read-only Design
+ * turn is in flight. Requiring the run to have been capable of the removal
+ * excludes a turn that only read or reported, which is the case that would
+ * otherwise inherit someone else's deletion.
+ *
+ * Deliberately coarse. It asks whether the run could have done it, not what it
+ * did — parsing the command for that is what twelve rounds of review showed
+ * cannot be made correct. The pair is therefore narrower than either half but
+ * still not provenance: a turn that ran `ls` while a user deleted a file is
+ * inside the window and capable, so it is credited. Closing that needs
+ * per-write attribution at the mutation boundary, which the daemon does not
+ * have while the agent writes to the project directly.
+ */
+export function hasFileRemovalCapableToolUse(events: AgentEvent[] | undefined): boolean {
+  return (events ?? []).some(
+    (ev) =>
+      ev.kind === 'tool_use' &&
+      (isCommandCapableToolUse(ev) || isRecognisedFileMutationTool(ev.name)),
+  );
+}
+
+/**
  * True when the run contains an errored tool call that could have left the
  * project half-mutated.
  *

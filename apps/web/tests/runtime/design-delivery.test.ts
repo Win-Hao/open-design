@@ -565,6 +565,55 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('no_result');
   });
 
+  it('does not credit a non-mutating run for a removal inside its window', () => {
+    // Fourteenth review round. The daemon's record is a before/after diff of
+    // the project tree across the run's window, so a user, sync client, or
+    // other process deleting a file while a read-only Design turn is in flight
+    // lands in it. Such a turn made no call capable of removing anything, so
+    // it must not inherit the deletion.
+    for (const events of [
+      [],
+      [
+        { kind: 'tool_use' as const, id: 'r-1', name: 'Read', input: { file_path: 'hero.png' } },
+        { kind: 'tool_result' as const, toolUseId: 'r-1', content: 'ok', isError: false },
+      ],
+      [
+        { kind: 'tool_use' as const, id: 'w-1', name: 'WebFetch', input: { url: 'https://example.com' } },
+        { kind: 'tool_result' as const, toolUseId: 'w-1', content: 'ok', isError: false },
+        { kind: 'tool_use' as const, id: 'g-1', name: 'Grep', input: { pattern: 'hero' } },
+        { kind: 'tool_result' as const, toolUseId: 'g-1', content: 'ok', isError: false },
+      ],
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'The hero image uses low contrast; increase it for readability.',
+          events,
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          removedPaths: ['stale.txt'],
+        }),
+      ).toBe('report_only');
+    }
+    // And it must not turn an unconfirmed mutation attempt into a delivery
+    // either: the errored write keeps its retryable failure.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Tried to update the page.',
+        events: [
+          { kind: 'tool_use', id: 'e-1', name: 'Edit', input: { file_path: 'index.html' } },
+          { kind: 'tool_result', toolUseId: 'e-1', content: 'String not found', isError: true },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        removedPaths: ['stale.txt'],
+      }),
+    ).toBe('no_result');
+  });
+
   it('leaves a read-only turn report-only', () => {
     // A turn that only read files removes nothing, so the daemon's own
     // before/after diff for that run reports no removals and the turn keeps
