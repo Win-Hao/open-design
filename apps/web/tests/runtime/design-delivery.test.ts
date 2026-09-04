@@ -290,8 +290,8 @@ describe('resolveDesignDeliveryOutcome', () => {
       {
         kind: 'tool_use',
         id: 'bash-1',
-        name: 'Bash',
-        input: { command: 'rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt && ls scripts' },
+        name: 'delete_file',
+        input: { path: 'scripts/sketch-i2i.py' },
       },
       { kind: 'tool_result', toolUseId: 'bash-1', content: 'gen_sketch.py', isError: false },
     ];
@@ -303,7 +303,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: deleteOnlyEvents,
         producedFileCount: 0,
         traceObjectFileCount: 0,
-        removedPaths: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
+        removedPaths: ['scripts/sketch-i2i.py'],
       }),
     ).toBe('delivered');
     // Only the removals this run asked for count. A listing delta that the
@@ -315,7 +315,7 @@ describe('resolveDesignDeliveryOutcome', () => {
         runStatus: 'succeeded',
         content: 'Removed the stale sketch script.',
         events: [
-          { kind: 'tool_use', id: 'bash-2', name: 'Bash', input: { command: 'rm -f scripts/sketch-i2i.py' } },
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'scripts/sketch-i2i.py' } },
           { kind: 'tool_result', toolUseId: 'bash-2', content: '', isError: false },
         ],
         producedFileCount: 0,
@@ -349,8 +349,8 @@ describe('resolveDesignDeliveryOutcome', () => {
         runStatus: 'succeeded',
         content: 'Cleaned up and updated the page.',
         events: [
-          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm stale.html' } },
-          { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'stale.txt' } },
+          { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
           { kind: 'tool_use', id: 'edit-1', name: 'Edit', input: { file_path: 'index.html' } },
           { kind: 'tool_result', toolUseId: 'edit-1', content: 'String not found', isError: true },
         ],
@@ -394,11 +394,11 @@ describe('resolveDesignDeliveryOutcome', () => {
         runStatus: 'succeeded',
         content: 'Cleaned up the backup files.',
         events: [
-          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt other.bak' } },
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'stale.txt' } },
           {
             kind: 'tool_result',
-            toolUseId: 'bash-1',
-            content: "rm: './other.bak': Permission denied",
+            toolUseId: 'd-1',
+            content: "delete failed: './other.bak' permission denied",
             isError: true,
           },
         ],
@@ -407,9 +407,9 @@ describe('resolveDesignDeliveryOutcome', () => {
         removedPaths: ['stale.txt'],
       }),
     ).toBe('no_result');
-    // The shape of the command no longer matters. When the daemon saw files
-    // leave and a mutation errored, the turn is a partial failure whatever
-    // spelling the shell used.
+    // A shell that declares no target attributes nothing, so there is no
+    // removal to call a partial failure; the turn keeps the outcome it would
+    // have had without this signal.
     for (const shellTool of ['Bash', 'shell', 'exec', 'terminal']) {
       expect(
         resolveDesignDeliveryOutcome({
@@ -423,8 +423,9 @@ describe('resolveDesignDeliveryOutcome', () => {
           producedFileCount: 0,
           traceObjectFileCount: 0,
           removedPaths: ['stale.txt'],
+          projectRoot: '/workspace/proj',
         }),
-      ).toBe('no_result');
+      ).toBe('report_only');
     }
   });
 
@@ -439,8 +440,8 @@ describe('resolveDesignDeliveryOutcome', () => {
         events: [
           { kind: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'missing.txt' } },
           { kind: 'tool_result', toolUseId: 'read-1', content: 'not found', isError: true },
-          { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-          { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'stale.txt' } },
+          { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
@@ -462,70 +463,13 @@ describe('resolveDesignDeliveryOutcome', () => {
           events: [
             { kind: 'tool_use', id: 'ro-1', name: toolName, input: {} },
             { kind: 'tool_result', toolUseId: 'ro-1', content: 'timeout', isError: true },
-            { kind: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'rm -f stale.txt' } },
-            { kind: 'tool_result', toolUseId: 'bash-1', content: '', isError: false },
+            { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'stale.txt' } },
+            { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
           ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
           removedPaths: ['stale.txt'],
-        }),
-      ).toBe('delivered');
-    }
-  });
-
-  it('delivers the reported cd-and-rm workflow', () => {
-    // Issue #7744's own command. Its `rm` sits behind `&&` and names paths the
-    // command text cannot be shown to have deleted, which is why every parser
-    // round left this turn failing. The daemon reports what left the project
-    // tree, so the shell's shape stops mattering.
-    expect(
-      resolveDesignDeliveryOutcome({
-        sessionMode: 'design',
-        runStatus: 'succeeded',
-        content: 'Removed the stale sketch script and the unused prompt reference list.',
-        events: [
-          {
-            kind: 'tool_use',
-            id: 'bash-1',
-            name: 'Bash',
-            input: {
-              command:
-                'pkill -f "gen_sketch.py" 2>/dev/null; cd "/workspace/proj" && rm -f scripts/sketch-i2i.py tests/texture/prompt-fox-refs.txt && ls scripts',
-            },
-          },
-          { kind: 'tool_result', toolUseId: 'bash-1', content: 'gen_sketch.py', isError: false },
-        ],
-        producedFileCount: 0,
-        traceObjectFileCount: 0,
-        removedPaths: ['scripts/sketch-i2i.py', 'tests/texture/prompt-fox-refs.txt'],
-      }),
-    ).toBe('delivered');
-  });
-
-  it('delivers a removal whatever shell form produced it', () => {
-    // The forms that defeated the parser one round at a time — a conditional
-    // branch, a `find … -delete`, a piped `xargs rm` — are indistinguishable
-    // here, because the evidence is the daemon's view of the tree rather than
-    // the command string.
-    for (const command of [
-      'cd sub && rm stale.txt',
-      "find . -name '*.bak' -delete",
-      "find . -name '*.tmp' | xargs rm",
-      'git clean -fd',
-      './scripts/cleanup.sh',
-    ]) {
-      expect(
-        resolveDesignDeliveryOutcome({
-          sessionMode: 'design',
-          runStatus: 'succeeded',
-          content: 'Cleaned up.',
-          events: [
-            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
-            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
-          ],
-          producedFileCount: 0,
-          traceObjectFileCount: 0,
-          removedPaths: ['stale.txt'],
+          projectRoot: '/workspace/proj',
         }),
       ).toBe('delivered');
     }
@@ -565,51 +509,123 @@ describe('resolveDesignDeliveryOutcome', () => {
     ).toBe('no_result');
   });
 
-  it('does not credit a non-mutating run for a removal inside its window', () => {
-    // Fourteenth review round. The daemon's record is a before/after diff of
-    // the project tree across the run's window, so a user, sync client, or
-    // other process deleting a file while a read-only Design turn is in flight
-    // lands in it. Such a turn made no call capable of removing anything, so
-    // it must not inherit the deletion.
-    for (const events of [
-      [],
-      [
-        { kind: 'tool_use' as const, id: 'r-1', name: 'Read', input: { file_path: 'hero.png' } },
-        { kind: 'tool_result' as const, toolUseId: 'r-1', content: 'ok', isError: false },
-      ],
-      [
-        { kind: 'tool_use' as const, id: 'w-1', name: 'WebFetch', input: { url: 'https://example.com' } },
-        { kind: 'tool_result' as const, toolUseId: 'w-1', content: 'ok', isError: false },
-        { kind: 'tool_use' as const, id: 'g-1', name: 'Grep', input: { pattern: 'hero' } },
-        { kind: 'tool_result' as const, toolUseId: 'g-1', content: 'ok', isError: false },
-      ],
-    ]) {
+  it('delivers a removal the run declared and the daemon observed', () => {
+    // Both halves are required. The daemon proves the file left; the
+    // structured tool call names the path it asked to remove.
+    for (const [name, input] of [
+      ['delete_file', { path: 'scripts/sketch-i2i.py' }],
+      ['rm_file', { file_path: '/workspace/proj/scripts/sketch-i2i.py' }],
+      ['unlink_file', { target_path: './scripts/sketch-i2i.py' }],
+      ['Delete', { file_path: 'scripts/sketch-i2i.py' }],
+    ] as const) {
       expect(
         resolveDesignDeliveryOutcome({
           sessionMode: 'design',
           runStatus: 'succeeded',
-          content: 'The hero image uses low contrast; increase it for readability.',
-          events,
+          content: 'Removed the stale sketch script.',
+          events: [
+            { kind: 'tool_use', id: 'd-1', name, input },
+            { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          removedPaths: ['scripts/sketch-i2i.py'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).toBe('delivered');
+    }
+  });
+
+  it('does not credit a shell turn for a removal it merely coincided with', () => {
+    // Sixteenth review round. Running a shell says the turn could have deleted
+    // something, not that it did, and the daemon's record spans the run's
+    // window rather than its actions. `ls` alongside a user deleting a file is
+    // the case that pairing capability with the record still got wrong.
+    for (const command of ['ls', 'ls -la', 'npm run build']) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Had a look around the project.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
           producedFileCount: 0,
           traceObjectFileCount: 0,
           removedPaths: ['stale.txt'],
+          projectRoot: '/workspace/proj',
         }),
       ).toBe('report_only');
     }
-    // And it must not turn an unconfirmed mutation attempt into a delivery
-    // either: the errored write keeps its retryable failure.
+  });
+
+  it('clears the reported command of its failure card without claiming delivery', () => {
+    // Issue #7744's own command. A shell string can supply neither half of the
+    // evidence: it cannot be parsed for what it removed, and running a shell
+    // is not proof it removed anything, so the turn is not `delivered`.
+    //
+    // It is `report_only` rather than `no_result`, which is the reported
+    // symptom going away: `upstream/main` returns `no_result` for this exact
+    // input and shows the ARTIFACT_NOT_FOUND card, while a shell deletion is
+    // no longer read as a failed mutation attempt. The user stops seeing a
+    // false failure; the turn is simply not credited as a delivery until
+    // run-scoped provenance exists at the mutation boundary.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
-        content: 'Tried to update the page.',
+        content: 'Removed the stale sketch script and the unused prompt reference list.',
         events: [
-          { kind: 'tool_use', id: 'e-1', name: 'Edit', input: { file_path: 'index.html' } },
-          { kind: 'tool_result', toolUseId: 'e-1', content: 'String not found', isError: true },
+          {
+            kind: 'tool_use',
+            id: 'bash-1',
+            name: 'Bash',
+            input: {
+              command:
+                'pkill -f "gen_sketch.py" 2>/dev/null; cd "/workspace/proj" && rm -f scripts/sketch-i2i.py && ls scripts',
+            },
+          },
+          { kind: 'tool_result', toolUseId: 'bash-1', content: 'gen_sketch.py', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        removedPaths: ['scripts/sketch-i2i.py'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('report_only');
+  });
+
+  it('does not credit a declared deletion the daemon did not observe', () => {
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed it.',
+        events: [
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: 'other.txt' } },
+          { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
         ],
         producedFileCount: 0,
         traceObjectFileCount: 0,
         removedPaths: ['stale.txt'],
+        projectRoot: '/workspace/proj',
+      }),
+    ).toBe('no_result');
+    // An out-of-project target cannot be placed inside the project either.
+    expect(
+      resolveDesignDeliveryOutcome({
+        sessionMode: 'design',
+        runStatus: 'succeeded',
+        content: 'Removed the scratch copy.',
+        events: [
+          { kind: 'tool_use', id: 'd-1', name: 'delete_file', input: { path: '/tmp/scratch/stale.txt' } },
+          { kind: 'tool_result', toolUseId: 'd-1', content: '', isError: false },
+        ],
+        producedFileCount: 0,
+        traceObjectFileCount: 0,
+        removedPaths: ['stale.txt'],
+        projectRoot: '/workspace/proj',
       }),
     ).toBe('no_result');
   });

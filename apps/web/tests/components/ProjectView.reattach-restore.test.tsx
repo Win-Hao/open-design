@@ -845,14 +845,14 @@ describe('ProjectView daemon reattach restore', () => {
 
     capturedHandlers!.onAgentEvent({
       kind: 'tool_use',
-      id: 'bash-1',
-      name: 'Bash',
-      input: { command: 'cd sub && rm -f stale.txt && ls' },
+      id: 'del-1',
+      name: 'delete_file',
+      input: { path: 'stale.txt' },
     });
     capturedHandlers!.onAgentEvent({
       kind: 'tool_result',
-      toolUseId: 'bash-1',
-      content: 'index.html',
+      toolUseId: 'del-1',
+      content: '',
       isError: false,
     });
     capturedHandlers!.onDelta('Removed stale.txt; nothing in the project referenced it.');

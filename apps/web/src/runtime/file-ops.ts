@@ -182,32 +182,68 @@ export function hasFileMutationToolUse(events: AgentEvent[] | undefined): boolea
 }
 
 /**
- * True when the run made a call that could remove a project file: a shell
- * command, or a tool whose name declares a write, edit, or delete. Success is
- * not required, and no path is read out of the command.
- *
- * It pairs with the daemon's removal record rather than replacing it. That
- * record is a before/after diff of the project tree across the run's window,
- * which proves a file left but not that this run removed it: a user, a sync
- * client, or another process can delete something while a read-only Design
- * turn is in flight. Requiring the run to have been capable of the removal
- * excludes a turn that only read or reported, which is the case that would
- * otherwise inherit someone else's deletion.
- *
- * Deliberately coarse. It asks whether the run could have done it, not what it
- * did — parsing the command for that is what twelve rounds of review showed
- * cannot be made correct. The pair is therefore narrower than either half but
- * still not provenance: a turn that ran `ls` while a user deleted a file is
- * inside the window and capable, so it is credited. Closing that needs
- * per-write attribution at the mutation boundary, which the daemon does not
- * have while the agent writes to the project directly.
+ * Lexically resolve a tool-supplied path to its project-relative form, or null
+ * when it provably lies outside the project. Absolute paths are placed against
+ * `projectRoot`; `..` is resolved first, and a climb above its own anchor is
+ * rejected.
  */
-export function hasFileRemovalCapableToolUse(events: AgentEvent[] | undefined): boolean {
-  return (events ?? []).some(
-    (ev) =>
-      ev.kind === 'tool_use' &&
-      (isCommandCapableToolUse(ev) || isRecognisedFileMutationTool(ev.name)),
-  );
+function toProjectRelativePath(raw: string, projectRoot?: string | null): string | null {
+  const slashed = raw.replace(/\\/g, '/');
+  const isAbsolute = slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed);
+  const segments: string[] = [];
+  for (const segment of slashed.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  if (segments.length === 0) return null;
+  if (!isAbsolute) return segments.join('/');
+  const rootSegments = projectRoot
+    ? projectRoot.replace(/\\/g, '/').split('/').filter((part) => part && part !== '.')
+    : null;
+  if (!rootSegments || rootSegments.length === 0) return null;
+  if (segments.length <= rootSegments.length) return null;
+  for (let i = 0; i < rootSegments.length; i += 1) {
+    if (segments[i] !== rootSegments[i]) return null;
+  }
+  return segments.slice(rootSegments.length).join('/');
+}
+
+/**
+ * Project-relative paths this run declared it was deleting, taken only from
+ * tools whose name says so and whose path arrives as a structured argument.
+ *
+ * A shell command is excluded on purpose, and that is the whole point of this
+ * predicate. Running a shell says the run *could* have deleted something, not
+ * that it did: `Bash { command: 'ls' }` is a shell call, and a user or sync
+ * client removing a file during that turn would otherwise be credited to it.
+ * A `delete_file({ path })` call carries the target itself, with no command
+ * text to parse and no question of whether a branch executed.
+ *
+ * The cost is that a deletion performed through the shell contributes nothing
+ * here, which includes the `cd … && rm …` form in the original report. Closing
+ * that needs run-scoped provenance at the mutation boundary; a before/after
+ * tree diff cannot supply it, because it spans the run's window rather than
+ * its actions.
+ */
+export function declaredDeletionTargets(
+  events: AgentEvent[] | undefined,
+  projectRoot?: string | null,
+): Set<string> {
+  const targets = new Set<string>();
+  for (const ev of dedupeToolUsesById(events)) {
+    if (ev.kind !== 'tool_use') continue;
+    if (classify(ev.name) !== 'delete') continue;
+    const raw = extractPath(ev.input);
+    if (!raw) continue;
+    const relative = toProjectRelativePath(raw, projectRoot);
+    if (relative) targets.add(relative);
+  }
+  return targets;
 }
 
 /**

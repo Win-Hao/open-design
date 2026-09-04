@@ -2,8 +2,8 @@ import type { ChatSessionMode } from '@open-design/contracts';
 import { containsQuestionFormAsk } from '../artifacts/question-form';
 import type { AgentEvent, ChatMessage } from '../types';
 import {
+  declaredDeletionTargets,
   hasFileMutationToolUse,
-  hasFileRemovalCapableToolUse,
   hasPossibleFileMutationFailure,
 } from './file-ops';
 import { unfinishedTodosFromEvents } from './todos';
@@ -35,6 +35,12 @@ export interface DesignDeliveryInput {
    * of the run, so it answers both questions at once.
    */
   removedPaths?: readonly string[];
+  /**
+   * Resolved project directory, used to place an absolute path a `Delete`
+   * tool supplied. Without it such a path cannot be shown to be in-project
+   * and is ignored.
+   */
+  projectRoot?: string | null;
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
   persistenceSucceeded?: boolean;
@@ -83,22 +89,30 @@ function hasLiveArtifactDelivery(events: AgentEvent[] | undefined): boolean {
 }
 
 /**
- * Removals this run can be held responsible for: files the daemon saw leave
- * the project during the run, when the run also made a call capable of
- * removing one.
+ * Removals this run can be held responsible for: files the daemon observed
+ * leave the project, intersected with the paths the run declared it was
+ * deleting through a structured `Delete`-family tool call.
  *
- * The daemon's record is a before/after diff of the project tree across the
- * run's window. It proves a file left; it does not prove this run removed it,
- * because a user or another process can delete something while the turn is in
- * flight. Pairing it with capability excludes the turn that only read or
- * reported, which is the case that would otherwise inherit someone else's
- * deletion. Neither half is checked against the other's paths — that is the
- * command parsing this design replaced.
+ * Each half answers what the other cannot. The daemon's record is a
+ * before/after diff of the project tree, so it proves a file left but spans
+ * the run's window rather than its actions — a user or sync client deleting
+ * something mid-turn lands in it. The tool call names a target with no command
+ * text to parse, but proves only intent. Requiring both means a turn is
+ * credited for a removal only when it asked for that exact path and that exact
+ * path is gone.
+ *
+ * A shell deletion contributes nothing, because a command string can supply
+ * neither half: it cannot be parsed for what it removed, and running a shell
+ * is not evidence of having removed anything. That leaves the `cd … && rm …`
+ * form of issue #7744 uncredited, pending run-scoped provenance at the
+ * mutation boundary.
  */
 function attributedRemovalCount(input: DesignDeliveryInput): number {
-  const removed = input.removedPaths?.length ?? 0;
-  if (removed === 0) return 0;
-  return hasFileRemovalCapableToolUse(input.events) ? removed : 0;
+  const removed = input.removedPaths;
+  if (!removed || removed.length === 0) return 0;
+  const declared = declaredDeletionTargets(input.events, input.projectRoot);
+  if (declared.size === 0) return 0;
+  return removed.filter((path) => declared.has(path)).length;
 }
 
 /**
