@@ -593,15 +593,15 @@ describe('resolveDesignDeliveryOutcome', () => {
         }),
       ).toBe('report_only');
     }
-    // Still credited when `rm` really is the command, including after a
-    // shell separator.
+    // Still credited when `rm` really is the command, after an unconditional
+    // separator.
     expect(
       resolveDesignDeliveryOutcome({
         sessionMode: 'design',
         runStatus: 'succeeded',
         content: 'Built and cleaned up.',
         events: [
-          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'npm run build && rm stale.txt' } },
+          { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command: 'npm run build; rm stale.txt' } },
           { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
         ],
         producedFileCount: 0,
@@ -610,6 +610,40 @@ describe('resolveDesignDeliveryOutcome', () => {
         projectRoot: '/workspace/proj',
       }),
     ).toBe('delivered');
+  });
+
+  it('does not attribute a deletion in a conditional branch', () => {
+    // Twelfth review round. `&&` and `||` make execution depend on an exit
+    // status the command text does not carry: `true || rm stale.txt` succeeds
+    // without deleting anything, so a concurrent external removal would be
+    // credited to this run.
+    //
+    // The cost is the reported bug itself. Issue #7744's command was
+    // `cd "<project>" && rm -f scripts/… && ls scripts`, whose `rm` sits in a
+    // conditional branch, so it is no longer attributable and that turn keeps
+    // the failure card this PR set out to remove. Establishing that the branch
+    // ran needs the daemon's view of the run, not the command string.
+    for (const command of [
+      'true || rm stale.txt',
+      'cd sub && rm stale.txt',
+      'cd "/workspace/proj" && rm -f stale.txt && ls',
+    ]) {
+      expect(
+        resolveDesignDeliveryOutcome({
+          sessionMode: 'design',
+          runStatus: 'succeeded',
+          content: 'Cleaned up.',
+          events: [
+            { kind: 'tool_use', id: 't-1', name: 'Bash', input: { command } },
+            { kind: 'tool_result', toolUseId: 't-1', content: '', isError: false },
+          ],
+          producedFileCount: 0,
+          traceObjectFileCount: 0,
+          confirmedRemovedFileNames: ['stale.txt'],
+          projectRoot: '/workspace/proj',
+        }),
+      ).not.toBe('delivered');
+    }
   });
 
   it('attributes a deletion under every runtime spelling of the shell tool', () => {

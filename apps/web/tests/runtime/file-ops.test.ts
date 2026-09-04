@@ -137,7 +137,7 @@ describe('deriveFileOps', () => {
     const events: AgentEvent[] = [
       use(
         'Bash',
-        { command: 'rm -f ./stale.txt "old file.md" *.log && unlink loose.tmp; echo done' },
+        { command: 'rm -f ./stale.txt "old file.md" *.log; unlink loose.tmp; echo done' },
         't1',
       ),
       ok('t1'),
@@ -150,6 +150,15 @@ describe('deriveFileOps', () => {
       'old file.md',
     ]);
     expect(rows.map((row) => row.ops)).toEqual([['delete'], ['delete'], ['delete']]);
+  });
+
+  it('does not infer a deletion from a conditional branch', () => {
+    // `&&` / `||` make execution depend on an exit status the command text
+    // does not carry, so a deletion behind one cannot be shown to have run.
+    // This case previously used `&& unlink loose.tmp` and expected the row.
+    for (const command of ['true || rm stale.txt', 'npm run build && rm stale.txt', 'ls && unlink loose.tmp']) {
+      expect(deriveFileOps([use('Bash', { command }, 't1'), ok('t1')])).toEqual([]);
+    }
   });
 
   it('stops Bash rm target inference at pipes and redirections', () => {
@@ -483,9 +492,9 @@ describe('extractSimpleBashDeletes command position (via deriveFileOps)', () => 
     }
   });
 
-  it('still reads rm/unlink in command position, including after a separator', () => {
+  it('still reads rm/unlink in command position, after an unconditional separator', () => {
     expect(
-      deriveFileOps([use('Bash', { command: 'npm run build && rm stale.txt' }, 't1'), ok('t1')])
+      deriveFileOps([use('Bash', { command: 'npm run build; rm stale.txt' }, 't1'), ok('t1')])
         .map((e) => e.fullPath),
     ).toEqual(['stale.txt']);
     expect(
